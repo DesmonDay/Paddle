@@ -168,7 +168,7 @@ void sample_neighbors(const framework::ExecutionContext& ctx, const T* src,
                          output_ptr.begin(), 0);
 
   // 4. Sample Kernel.
-  constexpr int BLOCK_WARPS = 128 / WARP_SIZE;
+  constexpr int BLOCK_WARPS = 256 / WARP_SIZE;
   constexpr int TILE_SIZE = BLOCK_WARPS * 16;
   const dim3 block(WARP_SIZE, BLOCK_WARPS);
   const dim3 grid((bs + TILE_SIZE - 1) / TILE_SIZE);
@@ -294,10 +294,9 @@ class GraphSampleOpCUDAKernel : public framework::OpKernel<T> {
     const size_t bs = vertices->dims()[0];
 
     // 2. Sample neighbors.
-    thrust::device_vector<T> inputs;
+    thrust::device_vector<T> inputs(bs);
     thrust::device_vector<T> outputs;
     thrust::device_vector<T> output_counts;
-    inputs.resize(bs);
     thrust::copy(p_vertices, p_vertices + bs, inputs.begin());
     std::vector<thrust::device_vector<T>> dst_vec;
     dst_vec.push_back(inputs);
