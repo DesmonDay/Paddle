@@ -403,8 +403,8 @@ class GraphSampleOpCUDAKernel : public framework::OpKernel<T> {
     // 6. Give output results.
     auto* out_src = ctx.Output<Tensor>("Out_Src");
     auto* out_dst = ctx.Output<Tensor>("Out_Dst");
-    out_src->Resize({static_cast<int>(src_merge.size())});
-    out_dst->Resize({static_cast<int>(src_merge.size())});
+    out_src->Resize({static_cast<int>(src_merge.size()), 1});
+    out_dst->Resize({static_cast<int>(src_merge.size()), 1});
     T* p_out_src = out_src->mutable_data<T>(ctx.GetPlace());
     T* p_out_dst = out_dst->mutable_data<T>(ctx.GetPlace());
 

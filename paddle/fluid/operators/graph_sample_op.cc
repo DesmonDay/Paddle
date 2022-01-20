@@ -42,8 +42,8 @@ class GraphSampleOP : public framework::OperatorWithKernel {
             "The parameter 'sample_sizes' in GraphSampleOp must be set. "
             "But received 'sample_sizes' is empty."));
 
-    ctx->SetOutputDim("Out_Src", {-1});
-    ctx->SetOutputDim("Out_Dst", {-1});
+    ctx->SetOutputDim("Out_Src", {-1, 1});
+    ctx->SetOutputDim("Out_Dst", {-1, 1});
     ctx->SetOutputDim("Sample_index", {-1});
   }
 
