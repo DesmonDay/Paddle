@@ -2555,7 +2555,7 @@ void BindImperative(py::module *m_ptr) {
 
 #if defined(PADDLE_WITH_CUDA)
   m.def("to_uva_tensor",
-        [](const py::object &obj, int device_id = 0) {
+        [](const py::object &obj, int device_id) {
           const auto &tracer = imperative::GetCurrentTracer();
           auto new_tensor = std::shared_ptr<imperative::VarBase>(
               new imperative::VarBase(tracer->GenerateUniqueName()));
