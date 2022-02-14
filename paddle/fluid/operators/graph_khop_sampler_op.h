@@ -71,8 +71,7 @@ template <typename T>
 void SampleNeighbors(const T* src, const T* dst_count, const T* src_eids,
                      std::vector<T>* inputs, std::vector<T>* outputs,
                      std::vector<T>* output_counts,
-                     std::vector<T>* outputs_eids, int k, bool is_first_layer,
-                     bool is_last_layer, bool return_eids) {
+                     std::vector<T>* outputs_eids, int k, bool return_eids) {
   const size_t bs = inputs->size();
   // Allocate the memory of outputs
   // Collect the neighbors size
@@ -101,13 +100,11 @@ void SampleNeighbors(const T* src, const T* dst_count, const T* src_eids,
       out_eids_vec.emplace_back(out_eids);
     }
   }
-  if (is_first_layer) {
-    PADDLE_ENFORCE_GT(total_neighbors, 0,
-                      platform::errors::InvalidArgument(
-                          "The input nodes `X` should have at "
-                          "least one neighbors, but none of the "
-                          "input nodes have neighbors."));
-  }
+  PADDLE_ENFORCE_GT(
+      total_neighbors, 0,
+      platform::errors::InvalidArgument("The input nodes `X` should have at "
+                                        "least one neighbors, but none of the "
+                                        "input nodes have neighbors."));
   output_counts->resize(bs);
   outputs->resize(total_neighbors);
   if (return_eids) {
@@ -156,24 +153,6 @@ void SampleNeighbors(const T* src, const T* dst_count, const T* src_eids,
                 outputs_eids->data() + sample_cumsum_sizes[i]);
     }
   }
-
-  if (!is_last_layer) {
-    std::sort(inputs->begin(), inputs->end());
-    std::vector<T> outputs_sort(outputs->size());
-    std::copy(outputs->begin(), outputs->end(), outputs_sort.begin());
-    std::sort(outputs_sort.begin(), outputs_sort.end());
-    auto outputs_sort_end =
-        std::unique(outputs_sort.begin(), outputs_sort.end());
-    outputs_sort.resize(std::distance(outputs_sort.begin(), outputs_sort_end));
-    std::vector<T> unique_outputs(outputs_sort.size());
-
-    auto unique_outputs_end = std::set_difference(
-        outputs_sort.begin(), outputs_sort.end(), inputs->begin(),
-        inputs->end(), unique_outputs.begin());
-
-    inputs->resize(std::distance(unique_outputs.begin(), unique_outputs_end));
-    std::copy(unique_outputs.begin(), unique_outputs_end, inputs->begin());
-  }
 }
 
 template <typename DeviceContext, typename T>
@@ -184,8 +163,10 @@ class GraphKhopSamplerOpKernel : public framework::OpKernel<T> {
     auto* src = ctx.Input<Tensor>("Row");
     auto* dst_count = ctx.Input<Tensor>("Col_Ptr");
     auto* vertices = ctx.Input<Tensor>("X");
-    std::vector<int> sample_sizes = ctx.Attr<std::vector<int>>("sample_sizes");
+    int sample_size = ctx.Attr<int>("sample_size");
     bool return_eids = ctx.Attr<bool>("return_eids");
+    bool set_reindex = ctx.Attr<bool>("set_reindex");
+    bool set_unique = ctx.Attr<bool>("set_unique");
 
     const T* src_data = src->data<T>();
     const T* dst_count_data = dst_count->data<T>();
@@ -195,172 +176,116 @@ class GraphKhopSamplerOpKernel : public framework::OpKernel<T> {
     // 2. Get unique input nodes(X).
     std::vector<T> inputs(bs);
     std::copy(p_vertices, p_vertices + bs, inputs.begin());
-    auto unique_inputs_end = std::unique(inputs.begin(), inputs.end());
-    inputs.resize(std::distance(inputs.begin(), unique_inputs_end));
+    if (set_unique) {
+      auto unique_inputs_end = std::unique(inputs.begin(), inputs.end());
+      inputs.resize(std::distance(inputs.begin(), unique_inputs_end));
+    }
 
     // 3. Sample neighbors. We should distinguish w/o "Eids".
+    // Update: We only have one sample_size value.
     std::vector<T> outputs;
     std::vector<T> output_counts;
     std::vector<T> outputs_eids;
-    std::vector<std::vector<T>> dst_vec;
-    dst_vec.emplace_back(inputs);
-    std::vector<std::vector<T>> outputs_vec;
-    std::vector<std::vector<T>> output_counts_vec;
-    std::vector<std::vector<T>> outputs_eids_vec;
-
-    const size_t num_layers = sample_sizes.size();
-    bool is_last_layer = false, is_first_layer = true;
 
     if (return_eids) {
       auto* src_eids = ctx.Input<Tensor>("Eids");
       const T* src_eids_data = src_eids->data<T>();
-      for (size_t i = 0; i < num_layers; i++) {
-        if (i == num_layers - 1) {
-          is_last_layer = true;
-        }
-        if (inputs.size() == 0) {
-          break;
-        }
-        if (i > 0) {
-          dst_vec.emplace_back(inputs);
-          is_first_layer = false;
-        }
-        SampleNeighbors<T>(src_data, dst_count_data, src_eids_data, &inputs,
-                           &outputs, &output_counts, &outputs_eids,
-                           sample_sizes[i], is_first_layer, is_last_layer,
-                           return_eids);
-        outputs_vec.emplace_back(outputs);
-        output_counts_vec.emplace_back(output_counts);
-        outputs_eids_vec.emplace_back(outputs_eids);
-      }
-    } else {
-      for (size_t i = 0; i < num_layers; i++) {
-        if (i == num_layers - 1) {
-          is_last_layer = true;
-        }
-        if (inputs.size() == 0) {
-          break;
-        }
-        if (i > 0) {
-          is_first_layer = false;
-          dst_vec.emplace_back(inputs);
-        }
-        SampleNeighbors<T>(src_data, dst_count_data, nullptr, &inputs, &outputs,
-                           &output_counts, &outputs_eids, sample_sizes[i],
-                           is_first_layer, is_last_layer, return_eids);
-        outputs_vec.emplace_back(outputs);
-        output_counts_vec.emplace_back(output_counts);
-        outputs_eids_vec.emplace_back(outputs_eids);
-      }
-    }
-
-    // 4. Concat intermediate sample results.
-    int64_t unique_dst_size = 0, src_size = 0;
-    for (size_t i = 0; i < num_layers; i++) {
-      unique_dst_size += dst_vec[i].size();
-      src_size += outputs_vec[i].size();
-    }
-
-    std::vector<T> unique_dst_merge(unique_dst_size);
-    std::vector<T> src_merge(src_size);
-    std::vector<T> dst_sample_counts_merge(unique_dst_size);
-    auto unique_dst_merge_ptr = unique_dst_merge.begin();
-    auto src_merge_ptr = src_merge.begin();
-    auto dst_sample_counts_merge_ptr = dst_sample_counts_merge.begin();
-    // TODO(daisiming): We may try to use std::move in the future.
-    for (size_t i = 0; i < num_layers; i++) {
-      if (i == 0) {
-        unique_dst_merge_ptr = std::copy(dst_vec[i].begin(), dst_vec[i].end(),
-                                         unique_dst_merge.begin());
-        src_merge_ptr = std::copy(outputs_vec[i].begin(), outputs_vec[i].end(),
-                                  src_merge.begin());
-        dst_sample_counts_merge_ptr =
-            std::copy(output_counts_vec[i].begin(), output_counts_vec[i].end(),
-                      dst_sample_counts_merge.begin());
-      } else {
-        unique_dst_merge_ptr = std::copy(dst_vec[i].begin(), dst_vec[i].end(),
-                                         unique_dst_merge_ptr);
-        src_merge_ptr = std::copy(outputs_vec[i].begin(), outputs_vec[i].end(),
-                                  src_merge_ptr);
-        dst_sample_counts_merge_ptr =
-            std::copy(output_counts_vec[i].begin(), output_counts_vec[i].end(),
-                      dst_sample_counts_merge_ptr);
-      }
-    }
-
-    // 5. Return eids results.
-    if (return_eids) {
-      std::vector<T> eids_merge(src_size);
-      auto eids_merge_ptr = eids_merge.begin();
-      for (size_t i = 0; i < num_layers; i++) {
-        if (i == 0) {
-          eids_merge_ptr =
-              std::copy(outputs_eids_vec[i].begin(), outputs_eids_vec[i].end(),
-                        eids_merge.begin());
-        } else {
-          eids_merge_ptr = std::copy(outputs_eids_vec[i].begin(),
-                                     outputs_eids_vec[i].end(), eids_merge_ptr);
-        }
-      }
+      SampleNeighbors<T>(src_data, dst_count_data, src_eids_data, &inputs,
+                         &outputs, &output_counts, &outputs_eids, sample_size,
+                         return_eids);
       auto* out_eids = ctx.Output<Tensor>("Out_Eids");
-      out_eids->Resize({static_cast<int>(eids_merge.size())});
+      out_eids->Resize({static_cast<int>(outputs_eids.size())});
       T* p_out_eids = out_eids->mutable_data<T>(ctx.GetPlace());
-      std::copy(eids_merge.begin(), eids_merge.end(), p_out_eids);
+      std::copy(outputs_eids.begin(), outputs_eids.end(), p_out_eids);
+    } else {
+      SampleNeighbors<T>(src_data, dst_count_data, nullptr, &inputs, &outputs,
+                         &output_counts, &outputs_eids, sample_size,
+                         return_eids);
     }
 
-    int64_t num_sample_edges = std::accumulate(
-        dst_sample_counts_merge.begin(), dst_sample_counts_merge.end(), 0);
+    int64_t num_sample_edges =
+        std::accumulate(output_counts.begin(), output_counts.end(), 0);
     PADDLE_ENFORCE_EQ(
-        src_merge.size(), num_sample_edges,
+        outputs.size(), num_sample_edges,
         platform::errors::PreconditionNotMet(
             "Number of sample edges dismatch, the sample kernel has error."));
 
-    // 6. Reindex edges.
-    std::unordered_map<T, T> node_map;
+    // 5. If set_reindex, Get hashtable according to inputs and outputs.
+    // We can get unique items(subset) and reindex src nodes of sample edges.
+    // We also get Reindex_X for input nodes here.
     std::vector<T> unique_nodes;
-    size_t reindex_id = 0;
-    for (size_t i = 0; i < unique_dst_merge.size(); i++) {
-      T node = unique_dst_merge[i];
-      unique_nodes.emplace_back(node);
-      node_map[node] = reindex_id++;
-    }
-    for (size_t i = 0; i < src_merge.size(); i++) {
-      T node = src_merge[i];
-      if (node_map.find(node) == node_map.end()) {
+    std::vector<T> dst_output(outputs.size());
+    if (set_reindex) {
+      std::unordered_map<T, T> node_map;
+      size_t reindex_id = 0;
+      for (size_t i = 0; i < inputs.size(); i++) {
+        T node = inputs[i];
         unique_nodes.emplace_back(node);
         node_map[node] = reindex_id++;
       }
-      src_merge[i] = node_map[node];
-    }
-    std::vector<T> dst_merge(src_merge.size());
-    size_t cnt = 0;
-    for (size_t i = 0; i < unique_dst_merge.size(); i++) {
-      for (T j = 0; j < dst_sample_counts_merge[i]; j++) {
-        T node = unique_dst_merge[i];
-        dst_merge[cnt++] = node_map[node];
+      // Reindex src.
+      for (size_t i = 0; i < outputs.size(); i++) {
+        T node = outputs[i];
+        if (node_map.find(node) == node_map.end()) {
+          unique_nodes.emplace_back(node);
+          node_map[node] = reindex_id++;
+        }
+        outputs[i] = node_map[node];
       }
+      // Reindex dst.
+      size_t cnt = 0;
+      for (size_t i = 0; i < inputs.size(); i++) {
+        for (T j = 0; j < output_counts[i]; j++) {
+          T node = inputs[i];
+          dst_output[cnt++] = node_map[node];
+        }
+      }
+      // Get Reindex_X.
+      auto* reindex_x = ctx.Output<Tensor>("Reindex_X");
+      T* p_reindex_x = reindex_x->mutable_data<T>(ctx.GetPlace());
+      for (size_t i = 0; i < bs; i++) {
+        p_reindex_x[i] = node_map[p_vertices[i]];
+      }
+    } else {
+      // Get dst_output.
+      size_t cnt = 0;
+      for (size_t i = 0; i < inputs.size(); i++) {
+        for (T j = 0; j < output_counts[i]; j++) {
+          dst_output[cnt++] = inputs[i];
+        }
+      }
+      // Get unique_nodes
+      unique_nodes.resize(inputs.size() + outputs.size());
+      std::copy(inputs.begin(), inputs.end(), unique_nodes.begin());
+      std::copy(outputs.begin(), outputs.end(),
+                unique_nodes.begin() + inputs.size());
+      auto unique_nodes_end =
+          std::unique(unique_nodes.begin(), unique_nodes.end());
+      unique_nodes.resize(
+          std::distance(unique_nodes.begin(), unique_nodes_end));
     }
 
-    // 7. Get Reindex_X for input nodes.
-    auto* reindex_x = ctx.Output<Tensor>("Reindex_X");
-    T* p_reindex_x = reindex_x->mutable_data<T>(ctx.GetPlace());
-    for (size_t i = 0; i < bs; i++) {
-      p_reindex_x[i] = node_map[p_vertices[i]];
-    }
+    // 6. Get Sample_Count.
+    auto* sample_count = ctx.Output<Tensor>("Sample_Count");
+    sample_count->Resize({static_cast<int>(output_counts.size())});
+    T* p_sample_count = sample_count->mutable_data<T>(ctx.GetPlace());
+    std::copy(output_counts.begin(), output_counts.end(), p_sample_count);
 
-    // 8. Get operator's outputs.
-    auto* sample_index = ctx.Output<Tensor>("Sample_Index");
+    // 7. Give Out_Src and Out_Dst results.
     auto* out_src = ctx.Output<Tensor>("Out_Src");
     auto* out_dst = ctx.Output<Tensor>("Out_Dst");
-    sample_index->Resize({static_cast<int>(unique_nodes.size())});
-    out_src->Resize({static_cast<int>(src_merge.size()), 1});
-    out_dst->Resize({static_cast<int>(src_merge.size()), 1});
-    T* p_sample_index = sample_index->mutable_data<T>(ctx.GetPlace());
+    out_src->Resize({static_cast<int>(dst_output.size())});
+    out_dst->Resize({static_cast<int>(dst_output.size())});
     T* p_out_src = out_src->mutable_data<T>(ctx.GetPlace());
     T* p_out_dst = out_dst->mutable_data<T>(ctx.GetPlace());
+    std::copy(outputs.begin(), outputs.end(), p_out_src);
+    std::copy(dst_output.begin(), dst_output.end(), p_out_dst);
+
+    // 8. Get Sample_Index.
+    auto* sample_index = ctx.Output<Tensor>("Sample_Index");
+    sample_index->Resize({static_cast<int>(unique_nodes.size())});
+    T* p_sample_index = sample_index->mutable_data<T>(ctx.GetPlace());
     std::copy(unique_nodes.begin(), unique_nodes.end(), p_sample_index);
-    std::copy(src_merge.begin(), src_merge.end(), p_out_src);
-    std::copy(dst_merge.begin(), dst_merge.end(), p_out_dst);
   }
 };
 

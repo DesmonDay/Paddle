@@ -47,7 +47,7 @@ class GraphKhopSamplerOP : public framework::OperatorWithKernel {
                    "GraphKhopSampler");
     OP_INOUT_CHECK(ctx->HasOutput("Sample_Index"), "Output", "Sample_Index",
                    "GraphKhopSampler");
-    OP_INOUT_CHECK(ctx->HasOutput("Reindex_X"), "Output", "Reindex_X",
+    OP_INOUT_CHECK(ctx->HasOutput("Sample_Count"), "Output", "Sample_Count",
                    "GraphKhopSampler");
 
     // Restrict all the inputs as 1-dim tensor, or 2-dim tensor with the second
@@ -56,13 +56,6 @@ class GraphKhopSamplerOP : public framework::OperatorWithKernel {
     InputShapeCheck(ctx->GetInputDim("Col_Ptr"), "Col_Ptr");
     InputShapeCheck(ctx->GetInputDim("X"), "X");
 
-    const std::vector<int>& sample_sizes =
-        ctx->Attrs().Get<std::vector<int>>("sample_sizes");
-    PADDLE_ENFORCE_EQ(
-        !sample_sizes.empty(), true,
-        platform::errors::InvalidArgument(
-            "The parameter 'sample_sizes' in GraphSampleOp must be set. "
-            "But received 'sample_sizes' is empty."));
     const bool& return_eids = ctx->Attrs().Get<bool>("return_eids");
     if (return_eids) {
       OP_INOUT_CHECK(ctx->HasInput("Eids"), "Input", "Eids",
@@ -73,12 +66,18 @@ class GraphKhopSamplerOP : public framework::OperatorWithKernel {
       ctx->SetOutputDim("Out_Eids", {-1});
     }
 
-    ctx->SetOutputDim("Out_Src", {-1, 1});
-    ctx->SetOutputDim("Out_Dst", {-1, 1});
-    ctx->SetOutputDim("Sample_Index", {-1});
+    auto x_dims = ctx->GetInputDim("X");
+    const bool& set_reindex = ctx->Attrs().Get<bool>("set_reindex");
+    if (set_reindex) {
+      OP_INOUT_CHECK(ctx->HasOutput("Reindex_X"), "Output", "Reindex_X",
+                     "GraphKhopSampler");
+      ctx->SetOutputDim("Reindex_X", x_dims);
+    }
 
-    auto dims = ctx->GetInputDim("X");
-    ctx->SetOutputDim("Reindex_X", dims);
+    ctx->SetOutputDim("Out_Src", {-1});
+    ctx->SetOutputDim("Out_Dst", {-1});
+    ctx->SetOutputDim("Sample_Index", {-1});
+    ctx->SetOutputDim("Sample_Count", {-1});
   }
 
  protected:
@@ -94,24 +93,41 @@ class GraphKhopSamplerOpMaker : public framework::OpProtoAndCheckerMaker {
  public:
   void Make() override {
     AddInput("Row", "The src index tensor of graph edges after sorted by dst.");
-    AddInput("Eids", "The eids of the input graph edges.").AsDispensable();
     AddInput("Col_Ptr",
              "The cumulative sum of the number of src neighbors of dst index, "
              "starts from 0, end with number of edges");
+    AddInput("Eids", "The eids of the input graph edges.").AsDispensable();
     AddInput("X", "The input center nodes index tensor.");
-    AddOutput("Out_Src",
-              "The output src edges tensor after sampling and reindex.");
-    AddOutput("Out_Dst",
-              "The output dst edges tensor after sampling and reindex.");
+
+    AddOutput(
+        "Out_Src",
+        "The output src edges tensor after sampling and reindex(optional).");
+    AddOutput(
+        "Out_Dst",
+        "The output dst edges tensor after sampling and reindex(optional).");
     AddOutput("Sample_Index",
               "The original index of the center nodes and sampling nodes");
-    AddOutput("Reindex_X", "The reindex node id of the input nodes.");
+    AddOutput(
+        "Sample_Count",
+        "The number of sample neighbors of input nodes or after uniquement");
+    AddOutput("Reindex_X", "The reindex node id of the input nodes.")
+        .AsIntermediate();
     AddOutput("Out_Eids", "The eids of the sample edges.").AsIntermediate();
-    AddAttr<std::vector<int>>(
-        "sample_sizes", "The sample sizes of graph sample neighbors method.")
-        .SetDefault({});
+
+    AddAttr<int>(
+        "sample_size",
+        "The sample size of graph sample neighbors method. "
+        "Set default value as -1, means return all neighbors of nodes.")
+        .SetDefault(-1);
     AddAttr<bool>("return_eids",
                   "Whether to return the eids of the sample edges.")
+        .SetDefault(false);
+    AddAttr<bool>("set_unique", "Whether to unique the input nodes X.")
+        .SetDefault(true);
+    AddAttr<bool>(
+        "set_reindex",
+        "Whether to reindex the nodes and sample edges from 0. "
+        "If set true, we will use the unique result of input nodes X as input.")
         .SetDefault(false);
     AddComment(R"DOC(
 Graph Learning Sampling Neighbors operator, for graphsage sampling method.
