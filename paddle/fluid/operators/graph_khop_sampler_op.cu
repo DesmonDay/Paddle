@@ -194,11 +194,11 @@ void SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
   T total_sample_num =
       thrust::reduce(output_counts->begin(), output_counts->end());
   // TODO(daisiming): If total_sample_num = 0, 需重新处理考虑
-  PADDLE_ENFORCE_GT(
+  /*PADDLE_ENFORCE_GT(
       total_sample_num, 0,
       platform::errors::InvalidArgument(
           "The input nodes `X` should have at least one neighbor, "
-          "but none of the input nodes have neighbors."));
+          "but none of the input nodes have neighbors."));*/
 
   outputs->resize(total_sample_num);
   if (return_eids) {

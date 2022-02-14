@@ -100,11 +100,13 @@ void SampleNeighbors(const T* src, const T* dst_count, const T* src_eids,
       out_eids_vec.emplace_back(out_eids);
     }
   }
+  /*
   PADDLE_ENFORCE_GT(
       total_neighbors, 0,
       platform::errors::InvalidArgument("The input nodes `X` should have at "
                                         "least one neighbors, but none of the "
                                         "input nodes have neighbors."));
+  */
   output_counts->resize(bs);
   outputs->resize(total_neighbors);
   if (return_eids) {
@@ -242,6 +244,7 @@ class GraphKhopSamplerOpKernel : public framework::OpKernel<T> {
       }
       // Get Reindex_X.
       auto* reindex_x = ctx.Output<Tensor>("Reindex_X");
+      reindex_x->Resize({static_cast<int>(bs)});
       T* p_reindex_x = reindex_x->mutable_data<T>(ctx.GetPlace());
       for (size_t i = 0; i < bs; i++) {
         p_reindex_x[i] = node_map[p_vertices[i]];
