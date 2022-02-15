@@ -169,7 +169,7 @@ __global__ void GetDstEdgeCUDAKernel(const int64_t num_rows, const T* in_rows,
 }
 
 template <typename T>
-void SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
+bool SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
                      const T* dst_count, const T* src_eids,
                      thrust::device_vector<T>* inputs,
                      thrust::device_vector<T>* outputs,
@@ -204,6 +204,9 @@ void SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
   if (return_eids) {
     outputs_eids->resize(total_sample_num);
   }
+  if (total_sample_num == 0) {
+    return false;
+  }
 
   thrust::device_vector<T> output_ptr;
   thrust::device_vector<T> output_idxs;
@@ -227,6 +230,8 @@ void SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
       thrust::raw_pointer_cast(outputs_eids->data()),
       thrust::raw_pointer_cast(output_ptr.data()),
       thrust::raw_pointer_cast(output_idxs.data()), return_eids);
+
+  return true;
 }
 
 template <typename T>
@@ -369,20 +374,21 @@ class GraphKhopSamplerOpCUDAKernel : public framework::OpKernel<T> {
     thrust::device_vector<T> outputs;
     thrust::device_vector<T> output_counts;
     thrust::device_vector<T> outputs_eids;
+    bool have_neighbors = false;
     if (return_eids) {
       auto* src_eids = ctx.Input<Tensor>("Eids");
       const T* src_eids_data = src_eids->data<T>();
-      SampleNeighbors<T>(ctx, src_data, dst_count_data, src_eids_data, &inputs,
-                         &outputs, &output_counts, &outputs_eids, sample_size,
-                         return_eids);
+      have_neighbors = SampleNeighbors<T>(
+          ctx, src_data, dst_count_data, src_eids_data, &inputs, &outputs,
+          &output_counts, &outputs_eids, sample_size, return_eids);
       auto* out_eids = ctx.Output<Tensor>("Out_Eids");
       out_eids->Resize({static_cast<int>(outputs_eids.size())});
       T* p_out_eids = out_eids->mutable_data<T>(ctx.GetPlace());
       thrust::copy(outputs_eids.begin(), outputs_eids.end(), p_out_eids);
     } else {
-      SampleNeighbors<T>(ctx, src_data, dst_count_data, nullptr, &inputs,
-                         &outputs, &output_counts, &outputs_eids, sample_size,
-                         return_eids);
+      have_neighbors = SampleNeighbors<T>(
+          ctx, src_data, dst_count_data, nullptr, &inputs, &outputs,
+          &output_counts, &outputs_eids, sample_size, return_eids);
     }
 
     int64_t num_sample_edges =
@@ -393,90 +399,136 @@ class GraphKhopSamplerOpCUDAKernel : public framework::OpKernel<T> {
         platform::errors::PreconditionNotMet(
             "Number of sample edges dismatch, the sample kernel has error."));
 
-    // 5. If set_reindex, Get hashtable according to inputs and outputs.
-    // We can get unique items(subset) and reindex src nodes of sample edges.
-    // We also get Reindex_X for input nodes here.
-    thrust::device_vector<T> subset;
-    thrust::device_vector<T> orig_nodes(bs);
-    thrust::device_vector<T> dst_output(outputs.size());
-    thrust::copy(p_vertices, p_vertices + bs, orig_nodes.begin());
-    if (set_reindex) {
-      thrust::device_vector<T> reindex_nodes(bs);
-      // Reindex src and orig_nodes here.
-      ReindexFunc<T>(ctx, &inputs, &outputs, &subset, &orig_nodes,
-                     &reindex_nodes, bs);
-      auto* reindex_x = ctx.Output<Tensor>("Reindex_X");
-      reindex_x->Resize({static_cast<int>(reindex_nodes.size())});
-      T* p_reindex_x = reindex_x->mutable_data<T>(ctx.GetPlace());
-      thrust::copy(reindex_nodes.begin(), reindex_nodes.end(), p_reindex_x);
-      // Reindex dst.
-      int64_t unique_dst_size = inputs.size();
-      thrust::device_vector<T> unique_dst_reindex(unique_dst_size);
-      thrust::sequence(unique_dst_reindex.begin(), unique_dst_reindex.end());
-      thrust::device_vector<T> dst_ptr(unique_dst_size);
-      thrust::exclusive_scan(output_counts.begin(), output_counts.end(),
-                             dst_ptr.begin());
-      constexpr int BLOCK_WARPS = 128 / WARP_SIZE;
-      constexpr int TILE_SIZE = BLOCK_WARPS * 16;
-      const dim3 block(WARP_SIZE, BLOCK_WARPS);
-      const dim3 grid((unique_dst_size + TILE_SIZE - 1) / TILE_SIZE);
-      GetDstEdgeCUDAKernel<T, BLOCK_WARPS, TILE_SIZE><<<
-          grid, block, 0, reinterpret_cast<const platform::CUDADeviceContext&>(
-                              ctx.device_context())
-                              .stream()>>>(
-          unique_dst_size, thrust::raw_pointer_cast(unique_dst_reindex.data()),
-          thrust::raw_pointer_cast(output_counts.data()),
-          thrust::raw_pointer_cast(dst_ptr.data()),
-          thrust::raw_pointer_cast(dst_output.data()));
+    if (!have_neighbors) {
+      auto* out_src = ctx.Output<Tensor>("Out_Src");
+      auto* out_dst = ctx.Output<Tensor>("Out_Dst");
+      auto* sample_count = ctx.Output<Tensor>("Sample_Count");
+      auto* sample_index = ctx.Output<Tensor>("Sample_Index");
+      out_src->Resize({static_cast<int>(0)});
+      out_dst->Resize({static_cast<int>(0)});
+      T* p_out_src = out_src->mutable_data<T>(ctx.GetPlace());
+      T* p_out_dst = out_dst->mutable_data<T>(ctx.GetPlace());
+      thrust::copy(outputs.begin(), outputs.end(), p_out_src);
+      thrust::copy(outputs.begin(), outputs.end(), p_out_dst);
+
+      sample_count->Resize({static_cast<int>(output_counts.size())});
+      T* p_sample_count = sample_count->mutable_data<T>(ctx.GetPlace());
+      thrust::copy(output_counts.begin(), output_counts.end(), p_sample_count);
+
+      if (!set_unique) {
+        auto new_unique_input_end =
+            thrust::unique(inputs.begin(), inputs.end());
+        sample_index->Resize({static_cast<int>(
+            thrust::distance(inputs.begin(), new_unique_input_end))});
+        T* p_sample_index = sample_index->mutable_data<T>(ctx.GetPlace());
+        thrust::copy(inputs.begin(), new_unique_input_end, p_sample_index);
+      } else {
+        sample_index->Resize({static_cast<int>(inputs.size())});
+        T* p_sample_index = sample_index->mutable_data<T>(ctx.GetPlace());
+        thrust::copy(inputs.begin(), inputs.end(), p_sample_index);
+      }
+
+      if (set_reindex) {
+        // Get Reindex_X.
+        auto* reindex_x = ctx.Output<Tensor>("Reindex_X");
+        reindex_x->Resize({static_cast<int>(inputs.size())});
+        T* p_reindex_x = reindex_x->mutable_data<T>(ctx.GetPlace());
+        thrust::device_vector<T> unique_dst_reindex(inputs.size());
+        thrust::sequence(unique_dst_reindex.begin(), unique_dst_reindex.end());
+        thrust::copy(unique_dst_reindex.begin(), unique_dst_reindex.end(),
+                     p_reindex_x);
+      }
     } else {
-      // Get dst_output.
-      int64_t unique_dst_size = inputs.size();
-      thrust::device_vector<T> dst_ptr(unique_dst_size);
-      thrust::exclusive_scan(output_counts.begin(), output_counts.end(),
-                             dst_ptr.begin());
-      constexpr int BLOCK_WARPS = 128 / WARP_SIZE;
-      constexpr int TILE_SIZE = BLOCK_WARPS * 16;
-      const dim3 block(WARP_SIZE, BLOCK_WARPS);
-      const dim3 grid((unique_dst_size + TILE_SIZE - 1) / TILE_SIZE);
-      GetDstEdgeCUDAKernel<T, BLOCK_WARPS, TILE_SIZE><<<
-          grid, block, 0, reinterpret_cast<const platform::CUDADeviceContext&>(
-                              ctx.device_context())
-                              .stream()>>>(
-          unique_dst_size, thrust::raw_pointer_cast(inputs.data()),
-          thrust::raw_pointer_cast(output_counts.data()),
-          thrust::raw_pointer_cast(dst_ptr.data()),
-          thrust::raw_pointer_cast(dst_output.data()));
+      // 5. If set_reindex, Get hashtable according to inputs and outputs.
+      // We can get unique items(subset) and reindex src nodes of sample edges.
+      // We also get Reindex_X for input nodes here.
+      thrust::device_vector<T> subset;
+      thrust::device_vector<T> orig_nodes(bs);
+      thrust::device_vector<T> dst_output(outputs.size());
+      thrust::copy(p_vertices, p_vertices + bs, orig_nodes.begin());
+      if (set_reindex) {
+        thrust::device_vector<T> reindex_nodes(bs);
+        // Reindex src and orig_nodes here.
+        ReindexFunc<T>(ctx, &inputs, &outputs, &subset, &orig_nodes,
+                       &reindex_nodes, bs);
+        auto* reindex_x = ctx.Output<Tensor>("Reindex_X");
+        reindex_x->Resize({static_cast<int>(reindex_nodes.size())});
+        T* p_reindex_x = reindex_x->mutable_data<T>(ctx.GetPlace());
+        thrust::copy(reindex_nodes.begin(), reindex_nodes.end(), p_reindex_x);
+        // Reindex dst.
+        int64_t unique_dst_size = inputs.size();
+        thrust::device_vector<T> unique_dst_reindex(unique_dst_size);
+        thrust::sequence(unique_dst_reindex.begin(), unique_dst_reindex.end());
+        thrust::device_vector<T> dst_ptr(unique_dst_size);
+        thrust::exclusive_scan(output_counts.begin(), output_counts.end(),
+                               dst_ptr.begin());
+        constexpr int BLOCK_WARPS = 128 / WARP_SIZE;
+        constexpr int TILE_SIZE = BLOCK_WARPS * 16;
+        const dim3 block(WARP_SIZE, BLOCK_WARPS);
+        const dim3 grid((unique_dst_size + TILE_SIZE - 1) / TILE_SIZE);
+        GetDstEdgeCUDAKernel<
+            T, BLOCK_WARPS,
+            TILE_SIZE><<<grid, block, 0,
+                         reinterpret_cast<const platform::CUDADeviceContext&>(
+                             ctx.device_context())
+                             .stream()>>>(
+            unique_dst_size,
+            thrust::raw_pointer_cast(unique_dst_reindex.data()),
+            thrust::raw_pointer_cast(output_counts.data()),
+            thrust::raw_pointer_cast(dst_ptr.data()),
+            thrust::raw_pointer_cast(dst_output.data()));
+      } else {
+        // Get dst_output.
+        int64_t unique_dst_size = inputs.size();
+        thrust::device_vector<T> dst_ptr(unique_dst_size);
+        thrust::exclusive_scan(output_counts.begin(), output_counts.end(),
+                               dst_ptr.begin());
+        constexpr int BLOCK_WARPS = 128 / WARP_SIZE;
+        constexpr int TILE_SIZE = BLOCK_WARPS * 16;
+        const dim3 block(WARP_SIZE, BLOCK_WARPS);
+        const dim3 grid((unique_dst_size + TILE_SIZE - 1) / TILE_SIZE);
+        GetDstEdgeCUDAKernel<
+            T, BLOCK_WARPS,
+            TILE_SIZE><<<grid, block, 0,
+                         reinterpret_cast<const platform::CUDADeviceContext&>(
+                             ctx.device_context())
+                             .stream()>>>(
+            unique_dst_size, thrust::raw_pointer_cast(inputs.data()),
+            thrust::raw_pointer_cast(output_counts.data()),
+            thrust::raw_pointer_cast(dst_ptr.data()),
+            thrust::raw_pointer_cast(dst_output.data()));
 
-      // Get subset.
-      subset.resize(inputs.size() + outputs.size());
-      thrust::copy(inputs.begin(), inputs.end(), subset.begin());
-      thrust::copy(outputs.begin(), outputs.end(),
-                   subset.begin() + inputs.size());
-      auto subset_unique_end = thrust::unique(subset.begin(), subset.end());
-      subset.resize(thrust::distance(subset.begin(), subset_unique_end));
+        // Get subset.
+        subset.resize(inputs.size() + outputs.size());
+        thrust::copy(inputs.begin(), inputs.end(), subset.begin());
+        thrust::copy(outputs.begin(), outputs.end(),
+                     subset.begin() + inputs.size());
+        auto subset_unique_end = thrust::unique(subset.begin(), subset.end());
+        subset.resize(thrust::distance(subset.begin(), subset_unique_end));
+      }
+
+      // 6. Get Sample_Count.
+      auto* sample_count = ctx.Output<Tensor>("Sample_Count");
+      sample_count->Resize({static_cast<int>(output_counts.size())});
+      T* p_sample_count = sample_count->mutable_data<T>(ctx.GetPlace());
+      thrust::copy(output_counts.begin(), output_counts.end(), p_sample_count);
+
+      // 7. Give Out_Src and Out_Dst results.
+      auto* out_src = ctx.Output<Tensor>("Out_Src");
+      auto* out_dst = ctx.Output<Tensor>("Out_Dst");
+      out_src->Resize({static_cast<int>(dst_output.size())});
+      out_dst->Resize({static_cast<int>(dst_output.size())});
+      T* p_out_src = out_src->mutable_data<T>(ctx.GetPlace());
+      T* p_out_dst = out_dst->mutable_data<T>(ctx.GetPlace());
+      thrust::copy(outputs.begin(), outputs.end(), p_out_src);
+      thrust::copy(dst_output.begin(), dst_output.end(), p_out_dst);
+
+      // 8. Get Sample_Index.
+      auto* sample_index = ctx.Output<Tensor>("Sample_Index");
+      sample_index->Resize({static_cast<int>(subset.size())});
+      T* p_sample_index = sample_index->mutable_data<T>(ctx.GetPlace());
+      thrust::copy(subset.begin(), subset.end(), p_sample_index);
     }
-
-    // 6. Get Sample_Count.
-    auto* sample_count = ctx.Output<Tensor>("Sample_Count");
-    sample_count->Resize({static_cast<int>(output_counts.size())});
-    T* p_sample_count = sample_count->mutable_data<T>(ctx.GetPlace());
-    thrust::copy(output_counts.begin(), output_counts.end(), p_sample_count);
-
-    // 7. Give Out_Src and Out_Dst results.
-    auto* out_src = ctx.Output<Tensor>("Out_Src");
-    auto* out_dst = ctx.Output<Tensor>("Out_Dst");
-    out_src->Resize({static_cast<int>(dst_output.size())});
-    out_dst->Resize({static_cast<int>(dst_output.size())});
-    T* p_out_src = out_src->mutable_data<T>(ctx.GetPlace());
-    T* p_out_dst = out_dst->mutable_data<T>(ctx.GetPlace());
-    thrust::copy(outputs.begin(), outputs.end(), p_out_src);
-    thrust::copy(dst_output.begin(), dst_output.end(), p_out_dst);
-
-    // 8. Get Sample_Index.
-    auto* sample_index = ctx.Output<Tensor>("Sample_Index");
-    sample_index->Resize({static_cast<int>(subset.size())});
-    T* p_sample_index = sample_index->mutable_data<T>(ctx.GetPlace());
-    thrust::copy(subset.begin(), subset.end(), p_sample_index);
   }
 };
 

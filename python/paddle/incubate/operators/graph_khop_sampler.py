@@ -27,7 +27,7 @@ def graph_khop_sampler(row,
                        sorted_eids=None,
                        return_eids=False,
                        set_unique=True,
-                       set_reindex=False,
+                       set_reindex=True,
                        name=None):
     """
     Graph Khop Sampler API.
@@ -52,8 +52,8 @@ def graph_khop_sampler(row,
                            default value is -1, which means sampling all the neighbors 
                            of the input nodes.
         sorted_eids (Tensor): The sorted edge ids, should not be None when `return_eids`
-                              is True. The shape should be [num_edges, 1], and the data
-                              type should be the same with `row`.
+                              is True. The shape should be [num_edges, 1] or [num_edges], 
+                              and the data type should be the same with `row`.
         return_eids (bool): Whether to return the id of the sample edges. Default is False.
                             If set True, the return value `edge_eids` will be initialized.
         set_unique (bool): Whether to unique the input sample nodes.
