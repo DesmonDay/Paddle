@@ -193,12 +193,6 @@ bool SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
   // 3. Get the number of total sample neighbors and some necessary datas.
   T total_sample_num =
       thrust::reduce(output_counts->begin(), output_counts->end());
-  // TODO(daisiming): If total_sample_num = 0, 需重新处理考虑
-  /*PADDLE_ENFORCE_GT(
-      total_sample_num, 0,
-      platform::errors::InvalidArgument(
-          "The input nodes `X` should have at least one neighbor, "
-          "but none of the input nodes have neighbors."));*/
 
   outputs->resize(total_sample_num);
   if (return_eids) {
@@ -236,11 +230,11 @@ bool SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
 
 template <typename T>
 void FillHashTable(const framework::ExecutionContext& ctx, const T* input,
-                   int64_t num_input, int64_t len_hashtable,
+                   int num_input, int64_t len_hashtable,
                    thrust::device_vector<T>* unique_items,
                    thrust::device_vector<T>* keys,
-                   thrust::device_vector<T>* values,
-                   thrust::device_vector<int64_t>* key_index) {
+                   thrust::device_vector<int>* values,
+                   thrust::device_vector<int>* key_index) {
 #ifdef PADDLE_WITH_HIP
   int block = 256;
 #else
@@ -304,9 +298,10 @@ void ReindexFunc(const framework::ExecutionContext& ctx,
   int64_t num = subset->size();
   int64_t log_num = 1 << static_cast<size_t>(1 + std::log2(num >> 1));
   int64_t size = log_num << 1;
+  // cudaMalloc?
   thrust::device_vector<T> keys(size, -1);
-  thrust::device_vector<T> values(size, -1);
-  thrust::device_vector<int64_t> key_index(size, -1);
+  thrust::device_vector<int> values(size, -1);
+  thrust::device_vector<int> key_index(size, -1);
   FillHashTable<T>(ctx, thrust::raw_pointer_cast(subset->data()),
                    subset->size(), size, &unique_items, &keys, &values,
                    &key_index);
@@ -321,9 +316,9 @@ void ReindexFunc(const framework::ExecutionContext& ctx,
   int block = 1024;
 #endif
   const auto& dev_ctx = ctx.cuda_device_context();
-  int64_t max_grid_dimx = dev_ctx.GetCUDAMaxGridDimSize()[0];
-  int64_t grid_tmp = (outputs->size() + block - 1) / block;
-  int64_t grid = grid_tmp < max_grid_dimx ? grid_tmp : max_grid_dimx;
+  int max_grid_dimx = dev_ctx.GetCUDAMaxGridDimSize()[0];
+  int grid_tmp = (outputs->size() + block - 1) / block;
+  int grid = grid_tmp < max_grid_dimx ? grid_tmp : max_grid_dimx;
   ReindexSrcOutput<
       T><<<grid, block, 0, reinterpret_cast<const platform::CUDADeviceContext&>(
                                ctx.device_context())
@@ -365,6 +360,9 @@ class GraphKhopSamplerOpCUDAKernel : public framework::OpKernel<T> {
     thrust::device_vector<T> inputs(bs);
     thrust::copy(p_vertices, p_vertices + bs, inputs.begin());
     if (set_unique) {
+      // TODO(daisiming): thrust::unique：只能去掉连续重复的数字，是否要支持
+      // set_unique?
+      // thrust::sort(inputs.begin(), inputs.end());
       auto unique_inputs_end = thrust::unique(inputs.begin(), inputs.end());
       inputs.resize(thrust::distance(inputs.begin(), unique_inputs_end));
     }
@@ -415,7 +413,7 @@ class GraphKhopSamplerOpCUDAKernel : public framework::OpKernel<T> {
       T* p_sample_count = sample_count->mutable_data<T>(ctx.GetPlace());
       thrust::copy(output_counts.begin(), output_counts.end(), p_sample_count);
 
-      if (!set_unique) {
+      if (set_unique) {
         auto new_unique_input_end =
             thrust::unique(inputs.begin(), inputs.end());
         sample_index->Resize({static_cast<int>(
@@ -499,12 +497,30 @@ class GraphKhopSamplerOpCUDAKernel : public framework::OpKernel<T> {
             thrust::raw_pointer_cast(dst_output.data()));
 
         // Get subset.
-        subset.resize(inputs.size() + outputs.size());
+        thrust::device_vector<T> inputs_sort(inputs.size());
+        thrust::copy(inputs.begin(), inputs.end(), inputs_sort.begin());
+        thrust::sort(inputs_sort.begin(), inputs_sort.end());
+        thrust::device_vector<T> outputs_sort(outputs.size());
+        thrust::copy(outputs.begin(), outputs.end(), outputs_sort.begin());
+        thrust::sort(outputs_sort.begin(), outputs_sort.end());
+        auto outputs_sort_end =
+            thrust::unique(outputs_sort.begin(), outputs_sort.end());
+        outputs_sort.resize(
+            thrust::distance(outputs_sort.begin(), outputs_sort_end));
+        thrust::device_vector<T> unique_outputs(outputs_sort.size());
+        auto unique_outputs_end = thrust::set_difference(
+            outputs_sort.begin(), outputs_sort.end(), inputs_sort.begin(),
+            inputs_sort.end(), unique_outputs.begin());
+        unique_outputs.resize(
+            thrust::distance(unique_outputs.begin(), unique_outputs_end));
+        subset.resize(inputs.size() + unique_outputs.size());
         thrust::copy(inputs.begin(), inputs.end(), subset.begin());
-        thrust::copy(outputs.begin(), outputs.end(),
+        thrust::copy(unique_outputs.begin(), unique_outputs.end(),
                      subset.begin() + inputs.size());
-        auto subset_unique_end = thrust::unique(subset.begin(), subset.end());
-        subset.resize(thrust::distance(subset.begin(), subset_unique_end));
+        VLOG(0) << "Subset";
+        thrust::copy(subset.begin(), subset.end(),
+                     std::ostream_iterator<T>(std::cout, " "));
+        std::cout << std::endl;
       }
 
       // 6. Get Sample_Count.
