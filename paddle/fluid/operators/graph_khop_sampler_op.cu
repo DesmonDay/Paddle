@@ -231,10 +231,8 @@ bool SampleNeighbors(const framework::ExecutionContext& ctx, const T* src,
 template <typename T>
 void FillHashTable(const framework::ExecutionContext& ctx, const T* input,
                    int num_input, int64_t len_hashtable,
-                   thrust::device_vector<T>* unique_items,
-                   thrust::device_vector<T>* keys,
-                   thrust::device_vector<int>* values,
-                   thrust::device_vector<int>* key_index) {
+                   thrust::device_vector<T>* unique_items, T* keys, int* values,
+                   int* key_index) {
 #ifdef PADDLE_WITH_HIP
   int block = 256;
 #else
@@ -248,9 +246,8 @@ void FillHashTable(const framework::ExecutionContext& ctx, const T* input,
   BuildHashTable<
       T><<<grid, block, 0, reinterpret_cast<const platform::CUDADeviceContext&>(
                                ctx.device_context())
-                               .stream()>>>(
-      input, num_input, len_hashtable, thrust::raw_pointer_cast(keys->data()),
-      thrust::raw_pointer_cast(key_index->data()));
+                               .stream()>>>(input, num_input, len_hashtable,
+                                            keys, key_index);
 
   // 2. Get item index count.
   thrust::device_vector<int> item_count(num_input + 1, 0);
@@ -259,8 +256,7 @@ void FillHashTable(const framework::ExecutionContext& ctx, const T* input,
                                ctx.device_context())
                                .stream()>>>(
       input, thrust::raw_pointer_cast(item_count.data()), num_input,
-      len_hashtable, thrust::raw_pointer_cast(keys->data()),
-      thrust::raw_pointer_cast(key_index->data()));
+      len_hashtable, keys, key_index);
 
   thrust::exclusive_scan(item_count.begin(), item_count.end(),
                          item_count.begin());
@@ -274,10 +270,7 @@ void FillHashTable(const framework::ExecutionContext& ctx, const T* input,
                                .stream()>>>(
       input, num_input, len_hashtable,
       thrust::raw_pointer_cast(unique_items->data()),
-      thrust::raw_pointer_cast(item_count.data()),
-      thrust::raw_pointer_cast(keys->data()),
-      thrust::raw_pointer_cast(values->data()),
-      thrust::raw_pointer_cast(key_index->data()));
+      thrust::raw_pointer_cast(item_count.data()), keys, values, key_index);
 }
 
 template <typename T>
@@ -299,12 +292,20 @@ void ReindexFunc(const framework::ExecutionContext& ctx,
   int64_t log_num = 1 << static_cast<size_t>(1 + std::log2(num >> 1));
   int64_t size = log_num << 1;
   // cudaMalloc?
-  thrust::device_vector<T> keys(size, -1);
-  thrust::device_vector<int> values(size, -1);
-  thrust::device_vector<int> key_index(size, -1);
+  // thrust::device_vector<T> keys(size, -1);
+  // thrust::device_vector<int> values(size, -1);
+  // thrust::device_vector<int> key_index(size, -1);
+  T* keys;
+  int *values, *key_index;
+  cudaMalloc(&keys, size * sizeof(T));
+  cudaMalloc(&values, size * sizeof(int));
+  cudaMalloc(&key_index, size * sizeof(int));
+  cudaMemset(keys, -1, size * sizeof(T));
+  cudaMemset(values, -1, size * sizeof(int));
+  cudaMemset(key_index, -1, size * sizeof(int));
   FillHashTable<T>(ctx, thrust::raw_pointer_cast(subset->data()),
-                   subset->size(), size, &unique_items, &keys, &values,
-                   &key_index);
+                   subset->size(), size, &unique_items, keys, values,
+                   key_index);
 
   subset->resize(unique_items.size());
   thrust::copy(unique_items.begin(), unique_items.end(), subset->begin());
@@ -323,9 +324,8 @@ void ReindexFunc(const framework::ExecutionContext& ctx,
       T><<<grid, block, 0, reinterpret_cast<const platform::CUDADeviceContext&>(
                                ctx.device_context())
                                .stream()>>>(
-      thrust::raw_pointer_cast(outputs->data()), outputs->size(), size,
-      thrust::raw_pointer_cast(keys.data()),
-      thrust::raw_pointer_cast(values.data()));
+      thrust::raw_pointer_cast(outputs->data()), outputs->size(), size, keys,
+      values);
 
   int grid_ = (bs + block - 1) / block;
   ReindexInputNodes<T><<<grid_, block, 0,
@@ -333,9 +333,10 @@ void ReindexFunc(const framework::ExecutionContext& ctx,
                              ctx.device_context())
                              .stream()>>>(
       thrust::raw_pointer_cast(orig_nodes->data()), bs,
-      thrust::raw_pointer_cast(reindex_nodes->data()), size,
-      thrust::raw_pointer_cast(keys.data()),
-      thrust::raw_pointer_cast(values.data()));
+      thrust::raw_pointer_cast(reindex_nodes->data()), size, keys, values);
+  cudaFree(keys);
+  cudaFree(values);
+  cudaFree(key_index);
 }
 
 template <typename DeviceContext, typename T>
@@ -517,10 +518,6 @@ class GraphKhopSamplerOpCUDAKernel : public framework::OpKernel<T> {
         thrust::copy(inputs.begin(), inputs.end(), subset.begin());
         thrust::copy(unique_outputs.begin(), unique_outputs.end(),
                      subset.begin() + inputs.size());
-        VLOG(0) << "Subset";
-        thrust::copy(subset.begin(), subset.end(),
-                     std::ostream_iterator<T>(std::cout, " "));
-        std::cout << std::endl;
       }
 
       // 6. Get Sample_Count.
