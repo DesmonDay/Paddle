@@ -154,16 +154,25 @@ void GraphSendRecvOpCUDAKernelLaunchHelper(
   auto* X = ctx.Input<Tensor>("X");
   auto* Y = ctx.Output<Tensor>("Out");
   std::string pool_type = ctx.Attr<std::string>("pool_type");
+  int64_t out_size = ctx.Attr<int64_t>("out_size");
 
   const int& index_size = src_index.dims()[0];
 
   T* p_output = Y->mutable_data<T>(ctx.GetPlace());
   const auto& src_dims = X->dims();
   int64_t memset_size = 1;
-  for (int i = 0; i < src_dims.size(); ++i) {
-    memset_size *= src_dims[i];
+  if (out_size <= -1) {
+    for (int i = 0; i < src_dims.size(); ++i) {
+      memset_size *= src_dims[i];
+    }
+  } else {
+    memset_size = out_size;
+    for (int i = 1; i < src_dims.size(); ++i) {
+      memset_size *= src_dims[i];
+    }
   }
   const size_t& memset_bytes = memset_size * sizeof(T);
+
   if (pool_type == "SUM" || pool_type == "MEAN") {
 #ifdef PADDLE_WITH_HIP
     hipMemset(p_output, 0, memset_bytes);
@@ -217,7 +226,9 @@ void GraphSendRecvOpCUDAKernelLaunchHelper(
                             ctx.device_context())
                             .stream()>>>(p_src, s_index, d_index, p_output,
                                          index_size, slice_size, functor);
-
+    if (out_size > -1) {
+      input_size = out_size;
+    }
     int64_t grid_max_tmp = (input_size * slice_size + block - 1) / block;
     int64_t grid_max =
         grid_max_tmp < max_grid_dimx ? grid_max_tmp : max_grid_dimx;
@@ -234,7 +245,9 @@ void GraphSendRecvOpCUDAKernelLaunchHelper(
                             ctx.device_context())
                             .stream()>>>(p_src, s_index, d_index, p_output,
                                          index_size, slice_size, functor);
-
+    if (out_size > -1) {
+      input_size = out_size;
+    }
     int64_t grid_min_tmp = (input_size * slice_size + block - 1) / block;
     int64_t grid_min =
         grid_min_tmp < max_grid_dimx ? grid_min_tmp : max_grid_dimx;
@@ -254,6 +267,9 @@ void GraphSendRecvOpCUDAKernelLaunchHelper(
 
     auto* dst_count = ctx.Output<Tensor>("Dst_count");
     int* p_dst_count = dst_count->mutable_data<int>(ctx.GetPlace());
+    if (out_size > -1) {
+      input_size = out_size;
+    }
 
 #ifdef PADDLE_WITH_HIP
     hipMemset(p_dst_count, 0, input_size * sizeof(int));
@@ -285,12 +301,13 @@ void GraphSendRecvGradOpCUDAKernelLaunchHelper(
     const Tensor& dst_index) {
   auto* X = ctx.Input<Tensor>(framework::GradVarName("Out"));
   auto* Y = ctx.Output<Tensor>(framework::GradVarName("X"));
+  auto* input = ctx.Input<Tensor>("X");
   std::string pool_type = ctx.Attr<std::string>("pool_type");
 
   const int& index_size = src_index.dims()[0];
 
   T* p_output = Y->mutable_data<T>(ctx.GetPlace());
-  const auto& src_dims = X->dims();
+  const auto& src_dims = input->dims();
   int64_t memset_size = 1;
   for (int i = 0; i < src_dims.size(); ++i) {
     memset_size *= src_dims[i];
@@ -323,7 +340,6 @@ void GraphSendRecvGradOpCUDAKernelLaunchHelper(
   int64_t max_grid_dimx = dev_ctx.GetCUDAMaxGridDimSize()[0];
   int64_t grid_tmp = (n + block - 1) / block;
   int64_t grid = grid_tmp < max_grid_dimx ? grid_tmp : max_grid_dimx;
-  int64_t input_size = src_dims[0];
   if (pool_type == "SUM") {
     GraphSendRecvSumCUDAFunctor<T, IndexT> functor;
     GraphSendRecvCUDAKernel<T, IndexT,
@@ -341,7 +357,6 @@ void GraphSendRecvGradOpCUDAKernelLaunchHelper(
                             .stream()>>>(p_src, s_index, d_index, p_output,
                                          index_size, slice_size, s_count);
   } else if (pool_type == "MAX" || pool_type == "MIN") {
-    auto* input = ctx.Input<Tensor>("X");
     auto* output = ctx.Input<Tensor>("Out");
     const T* ptr_input = input->data<T>();
     const T* ptr_output = output->data<T>();

@@ -123,10 +123,10 @@ void graph_send_recv_cpu_for_loop(const int& input_size, const int& index_size,
 
 template <typename T, typename IndexT, typename Functor>
 void graph_send_recv_cpu_for_loop_grad(
-    const int& input_size, const int& index_size, const IndexT* s_index,
-    const IndexT* d_index, const Tensor& src, Tensor* dst,
-    const std::string& pool_type, const int* dst_count = nullptr,
-    const Tensor* input = nullptr, const Tensor* output = nullptr) {
+    const int& index_size, const IndexT* s_index, const IndexT* d_index,
+    const Tensor& src, Tensor* dst, const std::string& pool_type,
+    const int* dst_count = nullptr, const Tensor* input = nullptr,
+    const Tensor* output = nullptr) {
   if (pool_type == "SUM") {
     Functor functor;
     for (int i = 0; i < index_size; ++i) {
@@ -169,13 +169,24 @@ void GraphSendRecvOpKernelLaunchHelper(const framework::ExecutionContext& ctx,
   auto* X = ctx.Input<Tensor>("X");
   auto* dst_index = ctx.Input<Tensor>("Dst_index");
   auto* Y = ctx.Output<Tensor>("Out");
+  int64_t out_size = ctx.Attr<int64_t>("out_size");
 
   const int& index_size = src_index.dims()[0];
 
   T* p_output = Y->mutable_data<T>(ctx.GetPlace());
   const auto& src_dims = X->dims();
-  int64_t memset_size = 1;
-  for (int i = 0; i < src_dims.size(); ++i) memset_size *= src_dims[i];
+  int64_t memset_size = 1, input_size = src_dims[0];
+  if (out_size <= -1) {
+    for (int i = 0; i < src_dims.size(); ++i) {
+      memset_size *= src_dims[i];
+    }
+  } else {
+    input_size = out_size;
+    memset_size = out_size;
+    for (int i = 1; i < src_dims.size(); ++i) {
+      memset_size *= src_dims[i];
+    }
+  }
   const size_t& memset_bytes = memset_size * sizeof(T);
   memset(p_output, 0, memset_bytes);
 
@@ -186,19 +197,23 @@ void GraphSendRecvOpKernelLaunchHelper(const framework::ExecutionContext& ctx,
   const std::string& pool_type = ctx.Attr<std::string>("pool_type");
   if (pool_type == "SUM") {
     graph_send_recv_cpu_for_loop<T, IndexT, GraphSendRecvSumFunctor<T>>(
-        src_dims[0], index_size, s_index, d_index, *X, Y, pool_type);
+        input_size, index_size, s_index, d_index, *X, Y, pool_type);
   } else if (pool_type == "MIN") {
     graph_send_recv_cpu_for_loop<T, IndexT, GraphSendRecvMinFunctor<T>>(
-        src_dims[0], index_size, s_index, d_index, *X, Y, pool_type);
+        input_size, index_size, s_index, d_index, *X, Y, pool_type);
   } else if (pool_type == "MAX") {
     graph_send_recv_cpu_for_loop<T, IndexT, GraphSendRecvMaxFunctor<T>>(
-        src_dims[0], index_size, s_index, d_index, *X, Y, pool_type);
+        input_size, index_size, s_index, d_index, *X, Y, pool_type);
   } else if (pool_type == "MEAN") {
     auto* dst_count = ctx.Output<Tensor>("Dst_count");
     int* p_dst_count = dst_count->mutable_data<int>(ctx.GetPlace());
-    memset(p_dst_count, 0, src_dims[0] * sizeof(int));
+    if (out_size <= -1) {
+      memset(p_dst_count, 0, src_dims[0] * sizeof(int));
+    } else {
+      memset(p_dst_count, 0, out_size * sizeof(int));
+    }
     graph_send_recv_cpu_for_loop<T, IndexT, GraphSendRecvSumFunctor<T>>(
-        src_dims[0], index_size, s_index, d_index, *X, Y, pool_type,
+        input_size, index_size, s_index, d_index, *X, Y, pool_type,
         p_dst_count);
   }
 }
@@ -209,11 +224,12 @@ void GraphSendRecvGradOpKernelLaunchHelper(
   auto* X = ctx.Input<Tensor>(framework::GradVarName("Out"));
   auto* dst_index = ctx.Input<Tensor>("Src_index");
   auto* Y = ctx.Output<Tensor>(framework::GradVarName("X"));
+  const auto* input = ctx.Input<Tensor>("X");
 
   const int& index_size = src_index.dims()[0];
 
   T* p_output = Y->mutable_data<T>(ctx.GetPlace());
-  const auto& src_dims = X->dims();
+  const auto& src_dims = input->dims();
   int64_t memset_size = 1;
   for (int i = 0; i < src_dims.size(); ++i) memset_size *= src_dims[i];
   const size_t& memset_bytes = memset_size * sizeof(T);
@@ -227,20 +243,18 @@ void GraphSendRecvGradOpKernelLaunchHelper(
   const std::string& pool_type = ctx.Attr<std::string>("pool_type");
   if (pool_type == "SUM") {
     graph_send_recv_cpu_for_loop_grad<T, IndexT, GraphSendRecvSumFunctor<T>>(
-        src_dims[0], index_size, s_index, d_index, *X, Y, pool_type);
+        index_size, s_index, d_index, *X, Y, pool_type);
   } else if (pool_type == "MEAN") {
     auto* dst_count = ctx.Input<Tensor>("Dst_count");
     const int* s_count = dst_count->data<int>();
     // Functor not used here.
     graph_send_recv_cpu_for_loop_grad<T, IndexT, GraphSendRecvSumFunctor<T>>(
-        src_dims[0], index_size, s_index, d_index, *X, Y, pool_type, s_count);
+        index_size, s_index, d_index, *X, Y, pool_type, s_count);
   } else if (pool_type == "MIN" || pool_type == "MAX") {
-    const auto* input = ctx.Input<Tensor>("X");
     const auto* output = ctx.Input<Tensor>("Out");
     // Functor not used here.
     graph_send_recv_cpu_for_loop_grad<T, IndexT, GraphSendRecvMinFunctor<T>>(
-        src_dims[0], index_size, s_index, d_index, *X, Y, pool_type, nullptr,
-        input, output);
+        index_size, s_index, d_index, *X, Y, pool_type, nullptr, input, output);
   }
 }
 

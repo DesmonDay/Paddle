@@ -65,12 +65,21 @@ class GraphSendRecvOP : public framework::OperatorWithKernel {
             "Src_index and Dst_index should have the same shape."));
 
     auto dims = ctx->GetInputDim("X");
-    ctx->SetOutputDim("Out", dims);
+    auto out_size = ctx->Attrs().Get<int64_t>("out_size");
+    if (out_size <= -1) {
+      ctx->SetOutputDim("Out", dims);
+    } else {
+      ctx->SetOutputDim("Out", {out_size, dims[1]});
+    }
 
     if (ctx->Attrs().Get<std::string>("pool_type") == "MEAN") {
       OP_INOUT_CHECK(ctx->HasOutput("Dst_count"), "Output", "Dst_count",
                      "GraphSendRecv");
-      ctx->SetOutputDim("Dst_count", {dims[0]});
+      if (out_size <= -1) {
+        ctx->SetOutputDim("Dst_count", {dims[0]});
+      } else {
+        ctx->SetOutputDim("Dst_count", {out_size});
+      }
     }
   }
 
@@ -88,8 +97,8 @@ class GraphSendRecvGradOp : public framework::OperatorWithKernel {
   using framework::OperatorWithKernel::OperatorWithKernel;
 
   void InferShape(framework::InferShapeContext* ctx) const override {
-    auto in_dims = ctx->GetInputDim(framework::GradVarName("Out"));
-    ctx->SetOutputDim(framework::GradVarName("X"), in_dims);
+    auto out_dims = ctx->GetInputDim("X");
+    ctx->SetOutputDim(framework::GradVarName("X"), out_dims);
   }
 
  protected:
@@ -118,6 +127,12 @@ class GraphSendRecvOpMaker : public framework::OpProtoAndCheckerMaker {
                          "tensors of Dst_index.")
         .SetDefault("SUM")
         .InEnum({"SUM", "MEAN", "MIN", "MAX"});
+    AddAttr<int64_t>(
+        "out_size",
+        "(int64_t, default -1)"
+        "Define the first dimension of Output tensor."
+        "If set default -1, then the shape of Out is the same with X.")
+        .SetDefault(-1);
     AddComment(R"DOC(
 Graph Learning Send_Recv combine operator.
 
@@ -143,6 +158,7 @@ class GraphSendRecvGradOpMaker : public framework::SingleGradOpMaker<T> {
     op->SetType("graph_send_recv_grad");
     op->SetInput("Src_index", this->Input("Src_index"));
     op->SetInput("Dst_index", this->Input("Dst_index"));
+    op->SetInput("X", this->Input("X"));
 
     if (BOOST_GET_CONST(std::string, this->GetAttr("pool_type")) == "MEAN") {
       op->SetInput("Dst_count", this->Output("Dst_count"));
@@ -150,7 +166,6 @@ class GraphSendRecvGradOpMaker : public framework::SingleGradOpMaker<T> {
 
     if (BOOST_GET_CONST(std::string, this->GetAttr("pool_type")) == "MIN" ||
         BOOST_GET_CONST(std::string, this->GetAttr("pool_type")) == "MAX") {
-      op->SetInput("X", this->Input("X"));
       op->SetInput("Out", this->Output("Out"));
     }
 

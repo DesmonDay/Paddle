@@ -19,7 +19,12 @@ from paddle.fluid import core
 from paddle import _C_ops
 
 
-def graph_send_recv(x, src_index, dst_index, pool_type="sum", name=None):
+def graph_send_recv(x,
+                    src_index,
+                    dst_index,
+                    pool_type="sum",
+                    out_size=None,
+                    name=None):
     r"""
 
     Graph Learning Send_Recv combine operator.
@@ -27,7 +32,7 @@ def graph_send_recv(x, src_index, dst_index, pool_type="sum", name=None):
     This operator is mainly used in Graph Learning domain, and the main purpose is to reduce intermediate memory 
     consumption in the process of message passing. Take `x` as the input tensor, we first use `src_index`
     to gather the corresponding data, and then use `dst_index` to update the corresponding position of output tensor 
-    in different pooling types, like sum, mean, max, or min.
+    in different pooling types, like sum, mean, max, or min. We can set `out_size` to get necessary output shape.
 
     .. code-block:: text
 
@@ -56,6 +61,9 @@ def graph_send_recv(x, src_index, dst_index, pool_type="sum", name=None):
                             The available data type is int32, int64. 
         pool_type (str): The pooling type of graph_send_recv, including `sum`, `mean`, `max`, `min`.
                          Default value is `sum`.
+        out_size (int64): We can set `out_size` to get necessary output shape. If not set, then this 
+                          attribute will not be used. Default value is None, and if set, then it 
+                          should be `max(dst_index) + 1`.
         name (str, optional): Name for the operation (optional, default is None).
                               For more information, please refer to :ref:`api_guide_Name`.
 
@@ -82,9 +90,17 @@ def graph_send_recv(x, src_index, dst_index, pool_type="sum", name=None):
             "pool_type should be `sum`, `mean`, `max` or `min`, but received %s"
             % pool_type)
 
+    # TODO(daisiming): should we add judgement for out_size: max(dst_index) + 1.
+
     if in_dygraph_mode():
-        out, tmp = _C_ops.graph_send_recv(x, src_index, dst_index, 'pool_type',
-                                          pool_type.upper())
+        if out_size is None:
+            out, tmp = _C_ops.graph_send_recv(x, src_index, dst_index,
+                                              'pool_type',
+                                              pool_type.upper(), 'out_size', -1)
+        else:
+            out, tmp = _C_ops.graph_send_recv(
+                x, src_index, dst_index, 'pool_type',
+                pool_type.upper(), 'out_size', out_size)
         return out
 
     check_variable_and_dtype(x, "X", ("float32", "float64", "int32", "int64"),
@@ -105,5 +121,8 @@ def graph_send_recv(x, src_index, dst_index, pool_type="sum", name=None):
                 "Dst_index": dst_index},
         outputs={"Out": out,
                  "Dst_count": dst_count},
-        attrs={"pool_type": pool_type.upper()})
+        attrs={
+            "pool_type": pool_type.upper(),
+            "out_size": -1 if out_size is None else out_size
+        })
     return out
