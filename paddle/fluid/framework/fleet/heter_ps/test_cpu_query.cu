@@ -77,6 +77,9 @@ TEST(TEST_FLEET, test_cpu_cache) {
   int64_t *res = new int64_t[7];
   cudaMemcpy(res, neighbor_sample_res->val, 3 * 2 * sizeof(int64_t),
              cudaMemcpyDeviceToHost);
+  int64_t *actual_val = new int64_t[7];
+  cudaMemcpy(actual_val, neighbor_sample_res->actual_val,
+             3 * 2 * sizeof(int64_t), cudaMemcpyDeviceToHost);
   int *actual_sample_size = new int[3];
   cudaMemcpy(actual_sample_size, neighbor_sample_res->actual_sample_size,
              3 * sizeof(int),
@@ -85,11 +88,16 @@ TEST(TEST_FLEET, test_cpu_cache) {
   //{1,9} or {9,1} is expected for key 0
   //{0,2} or {2,0} is expected for key 1
   //{1,3} or {3,1} is expected for key 2
+
+  int start = 0;
   for (int i = 0; i < 3; i++) {
     VLOG(0) << "actual sample size for " << i << " is "
             << actual_sample_size[i];
     for (int j = 0; j < actual_sample_size[i]; j++) {
-      VLOG(0) << "sampled an neighbor for node" << i << " : " << res[i * 2 + j];
+      // VLOG(0) << "sampled an neighbor for node" << i << " : " << res[i * 2 +
+      // j];
+      VLOG(0) << "sampled an neighbor for node" << actual_val[start + j];
     }
+    start += actual_sample_size[i];
   }
 }
