@@ -880,6 +880,11 @@ NeighborSampleResult GpuPsGraphTable::graph_neighbor_sample_v2(
   }
 
   if (cpu_query_switch) {
+    // Make a hashtable to get the position of keys under `key`.
+    Table* table = new Table(std::max((unsigned int)1, len) / load_factor_);
+    thrust::device_vector<unsighed int> pos(len);
+    thrust::sequence(pos.begin(), pos.end(), 0);
+    table->insert(key, thrust::raw_pointer_cast(pos.data()), len, stream);
     for (int i = 0; i < total_gpu; ++i) {
       if (h_left[i] == -1) {
         continue;
