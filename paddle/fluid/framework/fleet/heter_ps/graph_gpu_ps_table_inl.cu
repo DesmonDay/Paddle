@@ -808,7 +808,7 @@ NeighborSampleResult GpuPsGraphTable::graph_neighbor_sample_v2(
         WARP_SIZE, BLOCK_WARPS,
         TILE_SIZE><<<grid, block, 0, resource_->remote_stream(i, gpu_id)>>>(
         graph, id_array, actual_size_array, sample_array, sample_size,
-        shard_len);
+        shard_len, default_value);
   }
 
   for (int i = 0; i < total_gpu; ++i) {
