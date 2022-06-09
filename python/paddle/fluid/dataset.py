@@ -1062,6 +1062,8 @@ class InMemoryDataset(DatasetBase):
         self.proto_desc.graph_config.first_node_type = config.get(
             "first_node_type", "")
         self.proto_desc.graph_config.meta_path = config.get("meta_path", "")
+        self.proto_desc.graph_config.sage_mode = config.get("sage_mode", False)
+        self.proto_desc.graph_config.samples = config.get("samples", "")
 
 
 class QueueDataset(DatasetBase):

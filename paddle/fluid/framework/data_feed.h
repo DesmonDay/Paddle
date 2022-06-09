@@ -954,6 +954,8 @@ class GraphDataGenerator {
   int debug_mode_;
   std::vector<int> first_node_type_;
   std::vector<std::vector<int>> meta_path_;
+  bool sage_mode_;
+  std::vector<int> samples_;
 };
 
 class DataFeed {

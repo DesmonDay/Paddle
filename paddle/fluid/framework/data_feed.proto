@@ -37,6 +37,8 @@ message GraphConfig {
   optional int32 debug_mode = 7 [ default = 0 ];
   optional string first_node_type = 8;
   optional string meta_path = 9;
+  optional bool sage_mode = 10 [ default = false ];
+  optional string samples = 11;
 }
 
 message DataFeedDesc {

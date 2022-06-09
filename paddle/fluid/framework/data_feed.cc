@@ -2618,7 +2618,7 @@ int SlotRecordInMemoryDataFeed::Next() {
     }
     VLOG(3) << "enable heter next: " << offset_index_
             << " batch_offsets: " << batch_offsets_.size()
-            << " baych_size: " << this->batch_size_;
+            << " batch_size: " << this->batch_size_;
   } else {
     VLOG(3) << "datafeed in gpu graph mode";
     this->batch_size_ = gpu_graph_data_generator_.GenerateBatch();

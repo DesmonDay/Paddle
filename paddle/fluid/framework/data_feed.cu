@@ -666,6 +666,9 @@ void GraphDataGenerator::SetConfig(
           << ", batch_size: " << batch_size_;
   std::string first_node_type = graph_config.first_node_type();
   std::string meta_path = graph_config.meta_path();
+  sage_mode_ = graph_config.sage_mode();
+  std::string str_samples = graph_config.samples();
+
   auto gpu_graph_ptr = GraphGpuWrapper::GetInstance();
   auto edge_to_id = gpu_graph_ptr->edge_to_id;
   auto node_to_id = gpu_graph_ptr->feature_to_id;
@@ -700,6 +703,13 @@ void GraphDataGenerator::SetConfig(
       VLOG(2) << "edge_to_id[" << node << "] = " << iter->second;
       meta_path_[i].push_back(iter->second);
     }
+  }
+
+  auto samples = paddle::string::split_string<std::string>(str_samples, ";");
+  samples_.resize(samples.size());
+  for (size_t i = 0; i < samples.size(); i++) {
+    int sample_size = (int) samples[i];
+    samples_.push_back(sample_size);
   }
 };
 
