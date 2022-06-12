@@ -26,6 +26,12 @@ limitations under the License. */
 #include "paddle/fluid/framework/fleet/heter_ps/gpu_graph_node.h"
 #include "paddle/fluid/framework/fleet/heter_ps/graph_gpu_wrapper.h"
 
+#include "paddle/phi/api/lib/utils/tensor_utils.h"
+#include "paddle/phi/core/tensor_meta.h"
+#include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/empty_kernel.h"
+#include "paddle/phi/kernels/unique_kernel.h"
+
 namespace paddle {
 namespace framework {
 
@@ -346,6 +352,48 @@ int GraphDataGenerator::FillInsBuf() {
   return ins_buf_pair_len_;
 }
 
+void GraphDataGenerator::SampleNeighbors(int64_t* uniq_nodes, int len, 
+                                        int sample_size) {
+  // 返回edge_idx下的多阶采样结果，并且结果需要合并起来.
+  auto gpu_graph_ptr = GraphGpuWrapper::GetInstance();
+  auto edge_to_id = gpu_graph_ptr->edge_to_id;
+  for (auto& iter : edge_to_id) {
+    int edge_idx = iter.second;
+    NeighborSampleQuery q;
+    q.initialize(gpuid_, edge_idx, (uint64_t)(uniq_nodes), sample_size, len);
+    auto sample_res = gpu_graph_ptr->graph_neighbor_sample_v3(q, false);
+  }
+}
+
+//int GraphDataGenerator::GenerateReindexGraph() {
+
+//}
+
+void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len,
+                                            phi::DenseTensor* uniq_nodes,
+                                            phi::DenseTensor* inverse) {
+  // 看能否reindex后，每产生一个block，就填充data holder的数据。
+  const typename paddle::framework::ConvertToPhiContext<
+      platform::DeviceContext>::TYPE& dev_ctx_ = static_cast<
+          const typename paddle::framework::ConvertToPhiContext<
+          platform::DeviceContext>::TYPE&>(
+      *(static_cast<platform::CUDADeviceContext *>(
+        platform::DeviceContextPool::Instance().Get(place_))));
+  phi::DenseTensor in_x = phi::Empty<int64_t>(dev_ctx_, {len});
+  cudaMemcpy(in_x.data<int64_t>(), node_ids, len * sizeof(int64_t),
+        cudaMemcpyDeviceToDevice);
+  phi::DenseTensor index, counts;
+  std::vector<int> axis;
+  phi::UniqueKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
+      platform::DeviceContext>::TYPE>(dev_ctx_, in_x, false, true, 
+          false, axis, phi::DataType::INT32, uniq_nodes, &index, inverse, &counts);
+  int64_t* uniq_nodes_data = uniq_nodes->data<int64_t>();
+  int uniq_len = uniq_nodes->dims()[0]; 
+
+  for (size_t i = 0; i < samples_.size(); i++) {
+    SampleNeighbors(uniq_nodes_data, uniq_len, samples_[i]);
+  } 
+}
 
 int GraphDataGenerator::GenerateBatch() {
   platform::CUDADeviceGuard guard(gpuid_);
@@ -364,7 +412,7 @@ int GraphDataGenerator::GenerateBatch() {
       ins_buf_pair_len_ < batch_size_ ? ins_buf_pair_len_ : batch_size_;
 
   total_instance *= 2;
-  id_tensor_ptr_ =
+  id_tensor_ptr_ =  // 这里的shape是{total_instance, 1}了，不适合拿来做采样点.
       feed_vec_[0]->mutable_data<int64_t>({total_instance, 1}, this->place_);
   show_tensor_ptr_ =
       feed_vec_[1]->mutable_data<int64_t>({total_instance}, this->place_);
@@ -393,6 +441,15 @@ int GraphDataGenerator::GenerateBatch() {
                        stream_>>>(show_tensor_ptr_, total_instance);
   GraphFillCVMKernel<<<GET_BLOCKS(total_instance), CUDA_NUM_THREADS, 0,
                        stream_>>>(clk_tensor_ptr_, total_instance);
+
+  if (sage_mode_) {
+    phi::DenseTensor uniq_nodes, inverse;
+    auto uniq_node_meta = phi::DenseTensorMeta(phi::DataType::INT64, {-1});
+    auto inverse_meta = phi::DenseTensorMeta(phi::DataType::INT32, {-1});
+    uniq_nodes.set_meta(uniq_node_meta);
+    inverse.set_meta(inverse_meta);
+    GenerateSampleGraph(ins_cursor, total_instance, &uniq_nodes, &inverse);
+  }
 
   if (slot_num_ > 0) {
     int64_t *feature_buf = reinterpret_cast<int64_t *>(d_feature_buf_->ptr());
@@ -426,6 +483,9 @@ int GraphDataGenerator::GenerateBatch() {
   ins_buf_pair_len_ -= total_instance / 2;
 
   cudaStreamSynchronize(stream_);
+
+  // Begin sage data generation.
+  
 
   if (debug_mode_) {
     int64_t h_slot_tensor[slot_num_][total_instance];
@@ -731,6 +791,7 @@ void GraphDataGenerator::AllocResource(const paddle::platform::Place &place,
   stream_ = dynamic_cast<platform::CUDADeviceContext *>(
                 platform::DeviceContextPool::Instance().Get(place))
                 ->stream();
+
   feed_vec_ = feed_vec;
   slot_num_ = (feed_vec_.size() - 3) / 2;
 
@@ -864,7 +925,7 @@ void GraphDataGenerator::SetConfig(
   auto samples = paddle::string::split_string<std::string>(str_samples, ";");
   samples_.resize(samples.size());
   for (size_t i = 0; i < samples.size(); i++) {
-    int sample_size = (int) samples[i];
+    int sample_size = std::stoi(samples[i]);
     samples_.push_back(sample_size);
   }
 };

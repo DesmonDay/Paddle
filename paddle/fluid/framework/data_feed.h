@@ -905,6 +905,9 @@ class GraphDataGenerator {
     type_to_index_[type] = h_device_keys_.size();
     h_device_keys_.push_back(device_keys);
   }
+  void SampleNeighbors(int64_t* uniq_nodes, int len, int sample_size);
+  void GenerateSampleGraph(int64_t* node_ids, int len, phi::DenseTensor* uniq_nodes,
+                           phi::DenseTensor* inverse);
 
  protected:
   int walk_degree_;
