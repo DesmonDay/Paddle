@@ -18,6 +18,7 @@ limitations under the License. */
 #if defined(PADDLE_WITH_CUDA) && defined(PADDLE_WITH_HETERPS)
 
 #include <thrust/device_ptr.h>
+#include <thrust/device_vector.h>
 #include <thrust/random.h>
 #include <thrust/shuffle.h>
 #include <sstream>
@@ -26,11 +27,10 @@ limitations under the License. */
 #include "paddle/fluid/framework/fleet/heter_ps/gpu_graph_node.h"
 #include "paddle/fluid/framework/fleet/heter_ps/graph_gpu_wrapper.h"
 
-#include "paddle/phi/api/lib/utils/tensor_utils.h"
 #include "paddle/phi/core/tensor_meta.h"
-#include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/empty_kernel.h"
 #include "paddle/phi/kernels/unique_kernel.h"
+#include "paddle/phi/kernels/graph_reindex_kernel.h"
 
 namespace paddle {
 namespace framework {
@@ -353,45 +353,95 @@ int GraphDataGenerator::FillInsBuf() {
 }
 
 void GraphDataGenerator::SampleNeighbors(int64_t* uniq_nodes, int len, 
-                                        int sample_size) {
+                                        int sample_size,
+                                        thrust::device_vector<uint64_t>& all_sample_res,
+                                        thrust::device_vector<int>& all_count) {
   // 返回edge_idx下的多阶采样结果，并且结果需要合并起来.
   auto gpu_graph_ptr = GraphGpuWrapper::GetInstance();
   auto edge_to_id = gpu_graph_ptr->edge_to_id;
+  int64_t all_sample_size = 0;
+
+  std::vector<thrust::device_ptr<uint64_t>> concat_sample_val;
+  std::vector<thrust::device_ptr<int>> concat_ac_sample_size;
+  std::vector<int> edge_sample_size;
   for (auto& iter : edge_to_id) {
     int edge_idx = iter.second;
     NeighborSampleQuery q;
     q.initialize(gpuid_, edge_idx, (uint64_t)(uniq_nodes), sample_size, len);
     auto sample_res = gpu_graph_ptr->graph_neighbor_sample_v3(q, false);
+    int *d_actual_sample_size = sample_res.actual_sample_size;
+    uint64_t *d_neighbors = sample_res.actual_val;
+    all_sample_size += sample_res.total_sample_size;
+    thrust::device_ptr<uint64_t> d_neighbors_ptr = thrust::device_pointer_cast(d_neighbors);
+    thrust::device_ptr<int> d_ac_ptr = thrust::device_pointer_cast(d_actual_sample_size);
+    concat_sample_val.push_back(d_neighbors_ptr);
+    concat_ac_sample_size.push_back(d_ac_ptr);
+    edge_sample_size.push_back(sample_res.total_sample_size);
   }
+  all_sample_res.resize(all_sample_size);
+  int len_edge_to_id = edge_to_id.size();
+  all_count.resize(len_edge_to_id * len);
+  int64_t start = 0;
+  for (int i = 0; i < len_edge_to_id; i++) {
+    // 看是否要改成cudaMemcpyAsync.
+    thrust::copy(concat_sample_val[i], concat_sample_val[i] + edge_sample_size[i],
+                 all_sample_res.begin() + start);
+    start += edge_sample_size[i];
+    thrust::copy(concat_ac_sample_size[i], concat_ac_sample_size[i] + len,
+                 all_count.begin() + i * len);
+  } 
 }
 
-//int GraphDataGenerator::GenerateReindexGraph() {
-
-//}
-
-void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len,
-                                            phi::DenseTensor* uniq_nodes,
-                                            phi::DenseTensor* inverse) {
+void GraphDataGenerator::GenerateSampleGraph(
+    int64_t* node_ids, int len, phi::DenseTensor* uniq_nodes, phi::DenseTensor* inverse) {
   // 看能否reindex后，每产生一个block，就填充data holder的数据。
   const typename paddle::framework::ConvertToPhiContext<
-      platform::DeviceContext>::TYPE& dev_ctx_ = static_cast<
+      platform::CUDADeviceContext>::TYPE& dev_ctx_ = static_cast<
           const typename paddle::framework::ConvertToPhiContext<
-          platform::DeviceContext>::TYPE&>(
+          platform::CUDADeviceContext>::TYPE&>(
       *(static_cast<platform::CUDADeviceContext *>(
         platform::DeviceContextPool::Instance().Get(place_))));
+
   phi::DenseTensor in_x = phi::Empty<int64_t>(dev_ctx_, {len});
   cudaMemcpy(in_x.data<int64_t>(), node_ids, len * sizeof(int64_t),
         cudaMemcpyDeviceToDevice);
   phi::DenseTensor index, counts;
   std::vector<int> axis;
   phi::UniqueKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
-      platform::DeviceContext>::TYPE>(dev_ctx_, in_x, false, true, 
+      platform::CUDADeviceContext>::TYPE>(dev_ctx_, in_x, false, true, 
           false, axis, phi::DataType::INT32, uniq_nodes, &index, inverse, &counts);
-  int64_t* uniq_nodes_data = uniq_nodes->data<int64_t>();
+  int64_t* uniq_nodes_data = uniq_nodes->data<int64_t>();  // 这部分拷贝到feed_vec_中
   int uniq_len = uniq_nodes->dims()[0]; 
 
+  if (debug_mode_) {
+    int64_t *h_nodes_ids = new int64_t[len];
+    int64_t *h_uniq_nodes = new int64_t[uniq_len];
+    cudaMemcpy(h_nodes_ids, node_ids, len * sizeof(int64_t), 
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_uniq_nodes, uniq_nodes_data, uniq_len * sizeof(int64_t),
+               cudaMemcpyDeviceToHost);
+    for (int xx = 0; xx < len; xx++) {
+      VLOG(2) << "h_nodes_ids[" << xx << "]: " << h_nodes_ids[xx];
+    }
+    for (int xx = 0; xx < uniq_len; xx++) {
+      VLOG(2) << "h_uniq_nodes[" << xx << "]: " << h_uniq_nodes[xx];
+    }
+    delete[] h_nodes_ids;
+    delete[] h_uniq_nodes;
+  }
+
   for (size_t i = 0; i < samples_.size(); i++) {
-    SampleNeighbors(uniq_nodes_data, uniq_len, samples_[i]);
+    thrust::device_vector<uint64_t> ac_sample_val;
+    thrust::device_vector<int> ac_sample_size;
+    if (i == 0) {
+      SampleNeighbors(uniq_nodes_data, uniq_len, samples_[i], ac_sample_val,
+                      ac_sample_size);
+    } else {
+        //SampleNeighbors();
+    }
+    // 得到拼接好的采样结果和具体的采样个数，调用reindex_kernel。
+    // 将输入转成DenseTensor。
+    //phi::ReindexKernel() 
   } 
 }
 

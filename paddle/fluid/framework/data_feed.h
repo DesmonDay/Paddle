@@ -31,6 +31,7 @@ limitations under the License. */
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <thrust/device_vector.h>
 
 #include "paddle/fluid/framework/archive.h"
 #include "paddle/fluid/framework/blocking_queue.h"
@@ -905,7 +906,9 @@ class GraphDataGenerator {
     type_to_index_[type] = h_device_keys_.size();
     h_device_keys_.push_back(device_keys);
   }
-  void SampleNeighbors(int64_t* uniq_nodes, int len, int sample_size);
+  void SampleNeighbors(int64_t* uniq_nodes, int len, int sample_size, 
+                       thrust::device_vector<uint64_t>& ac_sample_val,
+                       thrust::device_vector<int>& ac_sample_size);
   void GenerateSampleGraph(int64_t* node_ids, int len, phi::DenseTensor* uniq_nodes,
                            phi::DenseTensor* inverse);
 
