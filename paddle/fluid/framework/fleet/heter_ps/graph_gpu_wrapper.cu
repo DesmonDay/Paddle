@@ -41,11 +41,10 @@ std::vector<std::vector<uint64_t>> GraphGpuWrapper::get_all_id(int type,
       ->cpu_graph_table_->get_all_id(type, idx, slice_num);
 }
 
-std::vector<std::vector<uint64_t>> GraphGpuWrapper::get_all_feature_ids(int type,
-                                                               int idx,
-                                                               int slice_num) {
+int GraphGpuWrapper::get_all_feature_ids(int type, int idx, int slice_num,
+                                        std::vector<std::vector<uint64_t>>* output) {
   return ((GpuPsGraphTable *)graph_table)
-      ->cpu_graph_table_->get_all_feature_ids(type, idx, slice_num);
+      ->cpu_graph_table_->get_all_feature_ids(type, idx, slice_num, output);
 }
 
 void GraphGpuWrapper::set_up_types(std::vector<std::string> &edge_types,
@@ -160,6 +159,7 @@ void GraphGpuWrapper::init_search_level(int level) { search_level = level; }
 
 void GraphGpuWrapper::init_service() {
   table_proto.set_task_pool_size(24);
+  table_proto.set_shard_num(1000);
   table_proto.set_search_level(search_level);
   table_proto.set_table_name("cpu_graph_table_");
   table_proto.set_use_cache(false);
