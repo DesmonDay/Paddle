@@ -31,7 +31,6 @@ limitations under the License. */
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <thrust/device_vector.h>
 
 #include "paddle/fluid/framework/archive.h"
 #include "paddle/fluid/framework/blocking_queue.h"

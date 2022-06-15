@@ -524,7 +524,7 @@ int GraphDataGenerator::GenerateBatch() {
       ins_buf_pair_len_ < batch_size_ ? ins_buf_pair_len_ : batch_size_;
 
   total_instance *= 2;
-  id_tensor_ptr_ =  // 这里的shape是{total_instance, 1}了，不适合拿来做采样点.
+  id_tensor_ptr_ =
       feed_vec_[0]->mutable_data<int64_t>({total_instance, 1}, this->place_);
   show_tensor_ptr_ =
       feed_vec_[1]->mutable_data<int64_t>({total_instance}, this->place_);
@@ -625,8 +625,6 @@ int GraphDataGenerator::GenerateBatch() {
 
   cudaStreamSynchronize(stream_);
 
-  // Begin sage data generation.
-  
   if (debug_mode_) {
     int64_t h_slot_tensor[slot_num_][total_instance];
     int64_t h_slot_lod_tensor[slot_num_][total_instance + 1];
