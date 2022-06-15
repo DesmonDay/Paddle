@@ -376,7 +376,6 @@ int GraphDataGenerator::FillInsBuf() {
 void GraphDataGenerator::SampleNeighbors(
     int64_t* uniq_nodes, int len, int sample_size, phi::DenseTensor* all_sample_val, 
     phi::DenseTensor* all_sample_count) {
-  // 返回edge_idx下的多阶采样结果，并且结果需要合并起来.
   const typename paddle::framework::ConvertToPhiContext<
       platform::CUDADeviceContext>::TYPE& dev_ctx_ = static_cast<
           const typename paddle::framework::ConvertToPhiContext<
@@ -395,30 +394,41 @@ void GraphDataGenerator::SampleNeighbors(
     NeighborSampleQuery q;
     q.initialize(gpuid_, edge_idx, (uint64_t)(uniq_nodes), sample_size, len);
     auto sample_res = gpu_graph_ptr->graph_neighbor_sample_v3(q, false);
-    concat_sample_val.emplace_back(sample_res.actual_val_mem);
-    concat_ac_sample_size.emplace_back(sample_res.actual_sample_size_mem);
-    total_sample_sizes.emplace_back(sample_res.total_sample_size); 
+    auto sample_val_mem = sample_res.actual_val_mem;
+    concat_sample_val.push_back(sample_val_mem);
+    auto sample_count_mem = sample_res.actual_sample_size_mem;
+    concat_ac_sample_size.push_back(sample_count_mem);
+    total_sample_sizes.push_back(sample_res.total_sample_size); 
     all_sample_size += sample_res.total_sample_size;
   }
-  /*
+
   all_sample_val->Resize({all_sample_size});
-  int64_t* all_sample_val_ptr = dev_ctx_.template Alloc<int64_t>(all_sample_val); 
+  int64_t* all_sample_val_ptr = dev_ctx_.template Alloc<int64_t>(all_sample_val);
   int len_edge_to_id = edge_to_id.size();
-  all_sample_count->Resize({len_edge_to_id});
+  all_sample_count->Resize({len_edge_to_id * len});
   int* all_sample_count_ptr = dev_ctx_.template Alloc<int>(all_sample_count);
 
   int64_t start = 0;
-  // Whether change to cudaMemcpyAsync.
   for (int i = 0; i < len_edge_to_id; i++) {
-    int64_t* tmp_sample_val = reinterpret_cast<int64_t *>(concat_sample_val[i]->ptr());
+    int64_t* tmp_sample_val = reinterpret_cast<int64_t* >(concat_sample_val[i]->ptr());
     cudaMemcpy(all_sample_val_ptr + start, tmp_sample_val, sizeof(int64_t) * total_sample_sizes[i],
                cudaMemcpyDeviceToDevice);
     int* tmp_sample_count = reinterpret_cast<int *>(concat_ac_sample_size[i]->ptr());
     cudaMemcpy(all_sample_count_ptr + i * len, tmp_sample_count, sizeof(int) * len,
                cudaMemcpyDeviceToDevice);
     start += total_sample_sizes[i];
-  } */
-  //cudaStreamSynchronize(stream_);
+  }
+
+  /*
+  int64_t h_all_sample_val[10];
+  cudaMemcpy(h_all_sample_val, all_sample_val_ptr, 10 * sizeof(int64_t), cudaMemcpyDeviceToHost);
+  for (int i = 0; i < 10; i++) {
+    std::cout << h_all_sample_val[i] << " ";
+  }
+  std::cout << std::endl;*/
+
+  concat_sample_val.clear();
+  concat_ac_sample_size.clear();
 }
 
 void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len) {
@@ -445,27 +455,55 @@ void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len) {
   int64_t* uniq_nodes_data = uniq_nodes.data<int64_t>();
   int* inverse_data = inverse.data<int>();
   int uniq_len = uniq_nodes.dims()[0]; 
-  // Copy uniq_nodes_data and inverse_data to feed_vec_.
-  // ...
 
-  // Begin Sample Neighbors, 先假设只采样一次。
-  // std::vector<phi::DenseTensor*> center_nodes;
-  // center_nodes.emplace_back(&uniq_nodes); 
+  thrust::device_vector<int64_t> final_nodes; 
   for (size_t i = 0; i < samples_.size(); i++) {
+    phi::DenseTensor neighbors, count;
     if (i == 0) {
-      phi::DenseTensor neighbors, count;
-      SampleNeighbors(uniq_nodes_data, uniq_len, samples_[i],
-                      &neighbors, &count);
+        SampleNeighbors(uniq_nodes_data, uniq_len, samples_[i], &neighbors, &count);
+    } else {
+        SampleNeighbors(thrust::raw_pointer_cast(final_nodes.data()),
+                        final_nodes.size(), samples_[i], &neighbors, &count);
+    } 
+    phi::DenseTensor reindex_src, reindex_dst, out_nodes;
+    phi::GraphReindexKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
+        platform::CUDADeviceContext>::TYPE>(
+            dev_ctx_, uniq_nodes, neighbors, count, nullptr, nullptr, false,
+            &reindex_src, &reindex_dst, &out_nodes);
+    
+    final_nodes.resize(out_nodes.numel());
+    cudaMemcpy(thrust::raw_pointer_cast(final_nodes.data()), out_nodes.data(), 
+               out_nodes.numel() * sizeof(int64_t), cudaMemcpyDeviceToDevice);
 
-      int64_t* neighbors_data = neighbors.data<int64_t>();
-      int* count_data = count.data<int>();
-      /*phi::DenseTensor reindex_src, reindex_dst, out_nodes;
-      phi::GraphReindexKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
-          platform::CUDADeviceContext>::TYPE>(
-              dev_ctx_, uniq_nodes, neighbors, count, nullptr, nullptr, false,
-              &reindex_src, &reindex_dst, &out_nodes);*/
-      // center_nodes.emplace_back(&out_nodes);
+    // Generate feed_vec_ data.
+    // ...
+
+    /*
+    // debug
+    int64_t* reindex_src_ptr = reindex_src.data<int64_t>();
+    int64_t h_reindex_src_ptr[50];
+    cudaMemcpy(h_reindex_src_ptr, reindex_src_ptr, 50 * sizeof(int64_t), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < 50; i++) {
+      std::cout << h_reindex_src_ptr[i] << " ";
     }
+    std::cout << "\n\n\n";
+
+    int64_t* reindex_dst_ptr = reindex_dst.data<int64_t>();
+    int64_t h_reindex_dst_ptr[50];
+    cudaMemcpy(h_reindex_dst_ptr, reindex_dst_ptr, 50 * sizeof(int64_t), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < 50; i++) {
+      std::cout << h_reindex_dst_ptr[i] << ";";
+    }
+    std::cout << "\n\n\n";
+
+    int64_t* out_nodes_ptr = out_nodes.data<int64_t>();
+    int64_t h_out_nodes_ptr[50];
+    cudaMemcpy(h_out_nodes_ptr, out_nodes_ptr, 50 * sizeof(int64_t), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < 50; i++) {
+      std::cout << h_out_nodes_ptr[i] << ",";
+    }
+    std::cout << "\n\n\n";
+    */
   }
 }
 
@@ -589,7 +627,6 @@ int GraphDataGenerator::GenerateBatch() {
 
   // Begin sage data generation.
   
-
   if (debug_mode_) {
     int64_t h_slot_tensor[slot_num_][total_instance];
     int64_t h_slot_lod_tensor[slot_num_][total_instance + 1];
