@@ -452,28 +452,25 @@ void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len) {
   phi::UniqueKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
       platform::CUDADeviceContext>::TYPE>(dev_ctx_, in_x, false, true,
           false, axis, phi::DataType::INT32, &uniq_nodes, &index, &inverse, &counts);
-  int64_t* uniq_nodes_data = uniq_nodes.data<int64_t>();
   int* inverse_data = inverse.data<int>();
   int uniq_len = uniq_nodes.dims()[0]; 
 
-  thrust::device_vector<int64_t> final_nodes; 
+  phi::DenseTensor final_nodes;
   for (size_t i = 0; i < samples_.size(); i++) {
     phi::DenseTensor neighbors, count;
     if (i == 0) {
+        int64_t* uniq_nodes_data = uniq_nodes.data<int64_t>();
         SampleNeighbors(uniq_nodes_data, uniq_len, samples_[i], &neighbors, &count);
     } else {
-        SampleNeighbors(thrust::raw_pointer_cast(final_nodes.data()),
-                        final_nodes.size(), samples_[i], &neighbors, &count);
+        int64_t* final_nodes_data = final_nodes.data<int64_t>();
+        SampleNeighbors(final_nodes_data, final_nodes.numel(), samples_[i], &neighbors, 
+                        &count); 
     } 
-    phi::DenseTensor reindex_src, reindex_dst, out_nodes;
+    phi::DenseTensor reindex_src, reindex_dst;
     phi::GraphReindexKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
         platform::CUDADeviceContext>::TYPE>(
             dev_ctx_, uniq_nodes, neighbors, count, nullptr, nullptr, false,
-            &reindex_src, &reindex_dst, &out_nodes);
-    
-    final_nodes.resize(out_nodes.numel());
-    cudaMemcpy(thrust::raw_pointer_cast(final_nodes.data()), out_nodes.data(), 
-               out_nodes.numel() * sizeof(int64_t), cudaMemcpyDeviceToDevice);
+            &reindex_src, &reindex_dst, &final_nodes);
 
     // Generate feed_vec_ data.
     // ...
