@@ -419,19 +419,13 @@ void GraphDataGenerator::SampleNeighbors(
     start += total_sample_sizes[i];
   }
 
-  /*
-  int64_t h_all_sample_val[10];
-  cudaMemcpy(h_all_sample_val, all_sample_val_ptr, 10 * sizeof(int64_t), cudaMemcpyDeviceToHost);
-  for (int i = 0; i < 10; i++) {
-    std::cout << h_all_sample_val[i] << " ";
-  }
-  std::cout << std::endl;*/
-
   concat_sample_val.clear();
   concat_ac_sample_size.clear();
 }
 
 void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len) {
+  platform::CUDADeviceGuard guard(gpuid_);
+
   const typename paddle::framework::ConvertToPhiContext<
       platform::CUDADeviceContext>::TYPE& dev_ctx_ = static_cast<
           const typename paddle::framework::ConvertToPhiContext<
@@ -452,6 +446,7 @@ void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len) {
   phi::UniqueKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
       platform::CUDADeviceContext>::TYPE>(dev_ctx_, in_x, false, true,
           false, axis, phi::DataType::INT32, &uniq_nodes, &index, &inverse, &counts);
+
   int* inverse_data = inverse.data<int>();
   int uniq_len = uniq_nodes.dims()[0]; 
 
@@ -465,42 +460,13 @@ void GraphDataGenerator::GenerateSampleGraph(int64_t* node_ids, int len) {
         int64_t* final_nodes_data = final_nodes.data<int64_t>();
         SampleNeighbors(final_nodes_data, final_nodes.numel(), samples_[i], &neighbors, 
                         &count); 
-    } 
+    }
+
     phi::DenseTensor reindex_src, reindex_dst;
     phi::GraphReindexKernel<int64_t, typename paddle::framework::ConvertToPhiContext<
         platform::CUDADeviceContext>::TYPE>(
             dev_ctx_, uniq_nodes, neighbors, count, nullptr, nullptr, false,
             &reindex_src, &reindex_dst, &final_nodes);
-
-    // Generate feed_vec_ data.
-    // ...
-
-    /*
-    // debug
-    int64_t* reindex_src_ptr = reindex_src.data<int64_t>();
-    int64_t h_reindex_src_ptr[50];
-    cudaMemcpy(h_reindex_src_ptr, reindex_src_ptr, 50 * sizeof(int64_t), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < 50; i++) {
-      std::cout << h_reindex_src_ptr[i] << " ";
-    }
-    std::cout << "\n\n\n";
-
-    int64_t* reindex_dst_ptr = reindex_dst.data<int64_t>();
-    int64_t h_reindex_dst_ptr[50];
-    cudaMemcpy(h_reindex_dst_ptr, reindex_dst_ptr, 50 * sizeof(int64_t), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < 50; i++) {
-      std::cout << h_reindex_dst_ptr[i] << ";";
-    }
-    std::cout << "\n\n\n";
-
-    int64_t* out_nodes_ptr = out_nodes.data<int64_t>();
-    int64_t h_out_nodes_ptr[50];
-    cudaMemcpy(h_out_nodes_ptr, out_nodes_ptr, 50 * sizeof(int64_t), cudaMemcpyDeviceToHost);
-    for (int i = 0; i < 50; i++) {
-      std::cout << h_out_nodes_ptr[i] << ",";
-    }
-    std::cout << "\n\n\n";
-    */
   }
 }
 
@@ -508,6 +474,7 @@ int GraphDataGenerator::GenerateBatch() {
   platform::CUDADeviceGuard guard(gpuid_);
   int res = 0;
   while (ins_buf_pair_len_ < batch_size_) {
+
     res = FillInsBuf();
     if (res == -1) {
       if (ins_buf_pair_len_ == 0) {
@@ -1010,6 +977,18 @@ void GraphDataGenerator::AllocResource(const paddle::platform::Place &place,
     d_slot_tensor_ptr_ = memory::AllocShared(place_, slot_num_ * sizeof(int64_t*));
     d_slot_lod_tensor_ptr_ = memory::AllocShared(place_, slot_num_ * sizeof(int64_t*));
   }
+
+  /*if (sage_mode_) {
+    int64_t table_size = batch_size_;
+    for (size_t i = 0; i < samples_.size(); i++) {
+      table_size *= (samples_[i] + 1);
+    }
+    int64_t log_num = 1 << static_cast<size_t>(1 + std::log2(num >> 1));
+    table_size = log_num << 1;
+    d_reindex_hashtable_key_ = memory::AllocShared(place_, table_size * sizeof(int64_t));
+    d_reindex_hashtable_value_ = memory::AllocShared(place_, table_size * sizeof(int));
+    d_reindex_hashtable_index_ = memory::AllocShared(place_, table_size * sizeof(int));
+  }*/
 
   cudaStreamSynchronize(stream_);
 }

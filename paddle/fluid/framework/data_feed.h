@@ -953,6 +953,9 @@ class GraphDataGenerator {
   std::shared_ptr<phi::Allocation> d_pair_num_;
   std::shared_ptr<phi::Allocation> d_slot_tensor_ptr_;
   std::shared_ptr<phi::Allocation> d_slot_lod_tensor_ptr_;
+  std::shared_ptr<phi::Allocation> d_reindex_hashtable_key_;
+  std::shared_ptr<phi::Allocation> d_reindex_hashtable_value_;
+  std::shared_ptr<phi::Allocation> d_reindex_hashtable_index_;
   int ins_buf_pair_len_;
   // size of a d_walk buf
   size_t buf_size_;

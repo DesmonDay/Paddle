@@ -21,12 +21,24 @@
 #include "paddle/phi/kernels/gpu/graph_reindex_funcs.h"
 #include "paddle/phi/kernels/graph_reindex_kernel.h"
 
+#include "paddle/fluid/memory/memory.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
 
 constexpr int WARP_SIZE = 32;
+const int CUDA_NUM_THREADS = 512;
+inline int GET_BLOCKS(const int N) {
+  return (N + CUDA_NUM_THREADS - 1) / CUDA_NUM_THREADS;
+}
+
+template <typename T>
+__global__ void InitializeHashTable(T* tensor, int len) {
+  CUDA_KERNEL_LOOP(idx, len) {
+    tensor[idx] = -1;
+  }
+}
 
 template <typename T, typename Context>
 void FillHashTable(const Context& dev_ctx,
@@ -155,33 +167,29 @@ void Reindex(const Context& dev_ctx,
   int64_t num = out_nodes->size();
   int64_t log_num = 1 << static_cast<size_t>(1 + std::log2(num >> 1));
   int64_t table_size = log_num << 1;
-  T* keys;
-  int *values, *key_index;
 
-#ifdef PADDLE_WITH_HIP
-  hipMalloc(&keys, table_size * sizeof(T));
-  hipMalloc(&values, table_size * sizeof(int));
-  hipMalloc(&key_index, table_size * sizeof(int));
-  hipMemset(keys, -1, table_size * sizeof(T));
-  hipMemset(values, -1, table_size * sizeof(int));
-  hipMemset(key_index, -1, table_size * sizeof(int));
-#else
-  cudaMalloc(&keys, table_size * sizeof(T));
-  cudaMalloc(&values, table_size * sizeof(int));
-  cudaMalloc(&key_index, table_size * sizeof(int));
-  cudaMemset(keys, -1, table_size * sizeof(T));
-  cudaMemset(values, -1, table_size * sizeof(int));
-  cudaMemset(key_index, -1, table_size * sizeof(int));
-#endif
+  auto keys = paddle::memory::Alloc(dev_ctx, table_size * sizeof(T));
+  auto values = paddle::memory::Alloc(dev_ctx, table_size * sizeof(int));
+  auto key_index = paddle::memory::Alloc(dev_ctx, table_size * sizeof(int));
+  T* keys_ptr = reinterpret_cast<T*>(keys->ptr());
+  int* values_ptr = reinterpret_cast<int*>(values->ptr());
+  int* key_index_ptr = reinterpret_cast<int*>(key_index->ptr());
+
+  InitializeHashTable<T><<<GET_BLOCKS(table_size), CUDA_NUM_THREADS, 0,
+                           dev_ctx.stream()>>>(keys_ptr, table_size);
+  InitializeHashTable<int><<<GET_BLOCKS(table_size), CUDA_NUM_THREADS, 0,
+                             dev_ctx.stream()>>>(values_ptr, table_size); 
+  InitializeHashTable<int><<<GET_BLOCKS(table_size), CUDA_NUM_THREADS, 0,
+                             dev_ctx.stream()>>>(key_index_ptr, table_size);
 
   FillHashTable<T, Context>(dev_ctx,
                             thrust::raw_pointer_cast(out_nodes->data()),
                             out_nodes->size(),
                             table_size,
                             &unique_nodes,
-                            keys,
-                            values,
-                            key_index);
+                            keys_ptr,
+                            values_ptr,
+                            key_index_ptr);
   out_nodes->resize(unique_nodes.size());
   thrust::copy(unique_nodes.begin(), unique_nodes.end(), out_nodes->begin());
 
@@ -198,17 +206,8 @@ void Reindex(const Context& dev_ctx,
       thrust::raw_pointer_cast(src_outputs),
       num_edges,
       table_size,
-      keys,
-      values);
-#ifdef PADDLE_WITH_HIP
-  hipFree(keys);
-  hipFree(values);
-  hipFree(key_index);
-#else
-  cudaFree(keys);
-  cudaFree(values);
-  cudaFree(key_index);
-#endif
+      keys_ptr,
+      values_ptr);
 }
 
 template <typename T, typename Context>
@@ -292,6 +291,7 @@ void GraphReindexKernel(const Context& dev_ctx,
                         DenseTensor* reindex_src,
                         DenseTensor* reindex_dst,
                         DenseTensor* out_nodes) {
+  VLOG(0) << "Enter GraphReindexKernel";
   const T* x_data = x.data<T>();
   const T* neighbors_data = neighbors.data<T>();
   const int* count_data = count.data<int>();
@@ -326,6 +326,7 @@ void GraphReindexKernel(const Context& dev_ctx,
                               hashtable_index_data,
                               num_edges);
   } else {
+    VLOG(0) << "Begin to Get SrcEdge and OutNodes";
     Reindex<T, Context>(
         dev_ctx, x_data, src_outputs, &unique_nodes, bs, num_edges);
   }
@@ -343,6 +344,7 @@ void GraphReindexKernel(const Context& dev_ctx,
   reindex_dst->Resize({num_edges});
   T* reindex_dst_data = dev_ctx.template Alloc<T>(reindex_dst);
 
+  VLOG(0) << "Begin to Get DstEdge";
   int begin = 0;
   for (int i = 0; i < num_edge_types; i++) {
     thrust::device_vector<int> dst_ptr(bs);
@@ -367,6 +369,8 @@ void GraphReindexKernel(const Context& dev_ctx,
   out_nodes->Resize({static_cast<int>(unique_nodes.size())});
   T* out_nodes_data = dev_ctx.template Alloc<T>(out_nodes);
   thrust::copy(unique_nodes.begin(), unique_nodes.end(), out_nodes_data);
+
+  VLOG(0) << "Finish GraphReindexKernel in phi.";
 }
 
 }  // namespace phi
