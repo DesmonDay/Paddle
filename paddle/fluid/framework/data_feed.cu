@@ -18,7 +18,6 @@ limitations under the License. */
 #if defined(PADDLE_WITH_CUDA) && defined(PADDLE_WITH_HETERPS)
 
 #include <thrust/device_ptr.h>
-#include <thrust/device_vector.h>
 #include <thrust/random.h>
 #include <thrust/shuffle.h>
 #include <sstream>

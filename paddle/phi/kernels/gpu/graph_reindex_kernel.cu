@@ -291,7 +291,6 @@ void GraphReindexKernel(const Context& dev_ctx,
                         DenseTensor* reindex_src,
                         DenseTensor* reindex_dst,
                         DenseTensor* out_nodes) {
-  VLOG(0) << "Enter GraphReindexKernel";
   const T* x_data = x.data<T>();
   const T* neighbors_data = neighbors.data<T>();
   const int* count_data = count.data<int>();
@@ -326,7 +325,6 @@ void GraphReindexKernel(const Context& dev_ctx,
                               hashtable_index_data,
                               num_edges);
   } else {
-    VLOG(0) << "Begin to Get SrcEdge and OutNodes";
     Reindex<T, Context>(
         dev_ctx, x_data, src_outputs, &unique_nodes, bs, num_edges);
   }
@@ -344,7 +342,6 @@ void GraphReindexKernel(const Context& dev_ctx,
   reindex_dst->Resize({num_edges});
   T* reindex_dst_data = dev_ctx.template Alloc<T>(reindex_dst);
 
-  VLOG(0) << "Begin to Get DstEdge";
   int begin = 0;
   for (int i = 0; i < num_edge_types; i++) {
     thrust::device_vector<int> dst_ptr(bs);
@@ -370,7 +367,6 @@ void GraphReindexKernel(const Context& dev_ctx,
   T* out_nodes_data = dev_ctx.template Alloc<T>(out_nodes);
   thrust::copy(unique_nodes.begin(), unique_nodes.end(), out_nodes_data);
 
-  VLOG(0) << "Finish GraphReindexKernel in phi.";
 }
 
 }  // namespace phi
