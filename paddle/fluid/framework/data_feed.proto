@@ -39,6 +39,7 @@ message GraphConfig {
   optional string meta_path = 9;
   optional bool sage_mode = 10 [ default = false ];
   optional string samples = 11;
+  optional bool gpu_graph_training = 12 [ default = true ];
 }
 
 message DataFeedDesc {
