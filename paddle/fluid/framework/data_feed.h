@@ -907,8 +907,10 @@ class GraphDataGenerator {
     h_device_keys_.push_back(device_keys);
   }
   void SampleNeighbors(int64_t* uniq_nodes, int len, int sample_size,
-                       phi::DenseTensor* neighbors, phi::DenseTensor* count);
-  void GenerateSampleGraph(int64_t* node_ids, int len);
+                       phi::DenseTensor* neighbors, phi::DenseTensor* count,
+                       std::vector<int64_t>& edges_split_num);
+  // void GenerateSampleGraph(int64_t* node_ids, int len);
+  int GenerateSampleGraph(phi::DenseTensor& uniq_nodes);
 
  protected:
   int walk_degree_;
@@ -924,9 +926,17 @@ class GraphDataGenerator {
   // point to device_keys_
   size_t cursor_;
   size_t jump_rows_;
+  int edge_to_id_len_;
   int64_t* id_tensor_ptr_;
+  int* index_tensor_ptr_;
   int64_t* show_tensor_ptr_;
   int64_t* clk_tensor_ptr_;
+  int64_t* num_nodes_tensor_ptr_;
+  int64_t* next_num_nodes_tensor_ptr_;
+  int64_t* edges_src_tensor_ptr_;
+  int64_t* edges_dst_tensor_ptr_;
+  int64_t* edges_split_tensor_ptr_;
+
   cudaStream_t stream_;
   paddle::platform::Place place_;
   std::vector<LoDTensor*> feed_vec_;
