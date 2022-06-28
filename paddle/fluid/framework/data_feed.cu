@@ -579,14 +579,13 @@ int GraphDataGenerator::GenerateBatch() {
         ins_buf_pair_len_ < batch_size_ ? ins_buf_pair_len_ : batch_size_;
 
     total_instance *= 2;
+  }
 
   uint64_t *ins_cursor, *ins_buf;
-  int uniq_instance = 0;
-  if (gpu_graph_training) {
+  uniq_instance_ = 0;
+  if (gpu_graph_training_) {
     VLOG(2) << "total_instance: " << total_instance
             << ", ins_buf_pair_len = " << ins_buf_pair_len_;
-    // uint64_t *ins_buf = reinterpret_cast<uint64_t *>(d_ins_buf_->ptr());
-    // uint64_t *ins_cursor = ins_buf + ins_buf_pair_len_ * 2 - total_instance;
     ins_buf = reinterpret_cast<uint64_t *>(d_ins_buf_->ptr());
     ins_cursor = ins_buf + ins_buf_pair_len_ * 2 - total_instance;
     
@@ -606,23 +605,23 @@ int GraphDataGenerator::GenerateBatch() {
         platform::CUDADeviceContext>::TYPE>(dev_ctx_, in_x, false, true,
             false, axis, phi::DataType::INT32, &uniq_nodes, &counts, &inverse, &counts);
     if (!sage_mode_) {
-      uniq_instance = uniq_nodes.numel();
+      uniq_instance_ = uniq_nodes.numel();
       id_tensor_ptr_ =
-          feed_vec_[0]->mutable_data<int64_t>({uniq_nodes.numel(), 1}, this->place_);
+          feed_vec_[0]->mutable_data<int64_t>({uniq_instance_, 1}, this->place_);
       show_tensor_ptr_ =
-          feed_vec_[2]->mutable_data<int64_t>({uniq_nodes.numel()}, this->place_);
+          feed_vec_[2]->mutable_data<int64_t>({uniq_instance_}, this->place_);
       clk_tensor_ptr_ =
-          feed_vec_[3]->mutable_data<int64_t>({uniq_nodes.numel()}, this->place_);
+          feed_vec_[3]->mutable_data<int64_t>({uniq_instance_}, this->place_);
 
       cudaMemcpyAsync(id_tensor_ptr_, uniq_nodes.data<int64_t>(),
-                      sizeof(int64_t) * uniq_nodes.numel(),
+                      sizeof(int64_t) * uniq_instance_,
                       cudaMemcpyDeviceToDevice, stream_); 
-      GraphFillCVMKernel<<<GET_BLOCKS(uniq_nodes.numel()), CUDA_NUM_THREADS, 0,
-                           stream_>>>(show_tensor_ptr_, uniq_nodes.numel());
-      GraphFillCVMKernel<<<GET_BLOCKS(uniq_nodes.numel()), CUDA_NUM_THREADS, 0,
-                           stream_>>>(clk_tensor_ptr_, uniq_nodes.numel());
+      GraphFillCVMKernel<<<GET_BLOCKS(uniq_instance_), CUDA_NUM_THREADS, 0,
+                           stream_>>>(show_tensor_ptr_, uniq_instance_);
+      GraphFillCVMKernel<<<GET_BLOCKS(uniq_instance_), CUDA_NUM_THREADS, 0,
+                           stream_>>>(clk_tensor_ptr_, uniq_instance_);
     } else {
-      uniq_instance = GenerateSampleGraph(uniq_nodes);
+      uniq_instance_ = GenerateSampleGraph(uniq_nodes);
     }
 
     index_tensor_ptr_ = 
@@ -708,8 +707,8 @@ int GraphDataGenerator::GenerateBatch() {
 
   offset_.clear();
   offset_.push_back(0);
-  if (gpu_graph_training) {
-    offset_.push_back(uniq_instance);
+  if (gpu_graph_training_) {
+    offset_.push_back(uniq_instance_);
   } else {
     offset_.push_back(total_instance);
   }

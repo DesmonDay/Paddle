@@ -927,6 +927,7 @@ class GraphDataGenerator {
   size_t cursor_;
   size_t jump_rows_;
   int edge_to_id_len_;
+  int uniq_instance_;
   int64_t* id_tensor_ptr_;
   int* index_tensor_ptr_;
   int64_t* show_tensor_ptr_;
