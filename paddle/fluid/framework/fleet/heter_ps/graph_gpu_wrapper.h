@@ -43,6 +43,8 @@ class GraphGpuWrapper {
                            std::string feat_dtype, int feat_shape);
   void load_edge_file(std::string name, std::string filepath, bool reverse);
   void load_node_file(std::string name, std::string filepath);
+  void load_node_and_edge(std::string etype, std::string ntype, std::string epath,
+                          std::string npath, int part_num, bool reverse);
   int32_t load_next_partition(int idx);
   int32_t get_partition_num(int idx);
   void load_node_weight(int type_id, int idx, std::string path);
@@ -70,7 +72,7 @@ class GraphGpuWrapper {
                                               std::vector<uint64_t>& key,
                                               int sample_size);
   void set_feature_separator(std::string ch);
-  int get_feature_of_nodes(int gpu_id, int64_t* d_walk, int64_t* d_offset,
+  int get_feature_of_nodes(int gpu_id, uint64_t* d_walk, uint64_t* d_offset,
                         uint32_t size, int slot_num);
 
   std::unordered_map<std::string, int> edge_to_id, feature_to_id;

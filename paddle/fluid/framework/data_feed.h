@@ -45,6 +45,7 @@ limitations under the License. */
 #if defined(PADDLE_WITH_CUDA)
 #include "paddle/fluid/platform/cuda_device_guard.h"
 #include "paddle/fluid/platform/device/gpu/gpu_info.h"
+#include "paddle/fluid/framework/fleet/heter_ps/gpu_graph_utils.h"
 #endif
 
 DECLARE_int32(record_pool_max_size);
@@ -422,7 +423,6 @@ struct UsedSlotGpuType {
 };
 
 #if defined(PADDLE_WITH_CUDA) && defined(PADDLE_WITH_HETERPS)
-#define CUDA_CHECK(val) CHECK(val == gpuSuccess)
 template <typename T>
 struct CudaBuffer {
   T* cu_buffer;
@@ -895,7 +895,7 @@ class GraphDataGenerator {
   int AcquireInstance(BufState* state);
   int GenerateBatch();
   int FillWalkBuf(std::shared_ptr<phi::Allocation> d_walk);
-  int FillFeatureBuf(int64_t* d_walk, int64_t* d_feature, size_t key_num);
+  int FillFeatureBuf(uint64_t* d_walk, uint64_t* d_feature, size_t key_num);
   int FillFeatureBuf(std::shared_ptr<phi::Allocation> d_walk,
                      std::shared_ptr<phi::Allocation> d_feature);
   void FillOneStep(uint64_t* start_ids, uint64_t* walk, int len,

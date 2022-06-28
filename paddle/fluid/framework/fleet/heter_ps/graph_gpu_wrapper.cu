@@ -141,6 +141,12 @@ void GraphGpuWrapper::load_node_file(std::string name, std::string filepath) {
   }
 }
 
+void GraphGpuWrapper::load_node_and_edge(std::string etype, std::string ntype, std::string epath,
+                                         std::string npath, int part_num, bool reverse) {
+  ((GpuPsGraphTable *)graph_table)
+      ->cpu_graph_table_->load_node_and_edge_file(etype, ntype, epath, npath, part_num, reverse);
+}
+
 void GraphGpuWrapper::add_table_feat_conf(std::string table_name,
                                           std::string feat_name,
                                           std::string feat_dtype,
@@ -247,8 +253,8 @@ NeighborSampleResult GraphGpuWrapper::graph_neighbor_sample_v3(
       ->graph_neighbor_sample_v3(q, cpu_switch);
 }
 
-int GraphGpuWrapper::get_feature_of_nodes(int gpu_id, int64_t* d_walk,
-                            int64_t* d_offset, uint32_t size, int slot_num) {
+int GraphGpuWrapper::get_feature_of_nodes(int gpu_id, uint64_t* d_walk,
+                            uint64_t* d_offset, uint32_t size, int slot_num) {
   platform::CUDADeviceGuard guard(gpu_id);
   PADDLE_ENFORCE_NOT_NULL(graph_table);
   return ((GpuPsGraphTable *)graph_table)
