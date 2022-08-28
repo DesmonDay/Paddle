@@ -93,6 +93,9 @@ class GraphGpuWrapper {
                                              uint64_t* device_keys,
                                              int walk_degree,
                                              int len);
+  NeighborSampleResultV2 graph_neighbor_sample_all_edge_type(
+      int gpu_id, int edge_type_len, uint64_t* key,
+      std::vector<int64_t>& edges_split, int sample_size, int len);
   std::vector<uint64_t> graph_neighbor_sample(int gpu_id,
                                               int idx,
                                               std::vector<uint64_t>& key,

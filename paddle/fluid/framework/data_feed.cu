@@ -85,28 +85,6 @@ __global__ void FillSlotValueOffsetKernel(const int ins_num,
   }
 }
 
-template <int WARP_SIZE, int BLOCK_WARPS, int TILE_SIZE>
-__global__ void fill_actual_neighbors(int64_t* vals,
-                                      int64_t* actual_vals,
-                                      int* actual_sample_size,
-                                      int* cumsum_actual_sample_size,
-                                      int sample_size,
-                                      int len) {
-  assert(blockDim.x == WARP_SIZE);
-  assert(blockDim.y == BLOCK_WARPS);
-
-  int i = blockIdx.x * TILE_SIZE + threadIdx.y;
-  const int last_idx = min(static_cast<int>(blockIdx.x + 1) * TILE_SIZE, len);
-  while (i < last_idx) {
-    int offset1 = cumsum_actual_sample_size[i];
-    int offset2 = sample_size * i;
-    for (int j = threadIdx.x; j < actual_sample_size[i]; j += WARP_SIZE) {
-      actual_vals[offset1 + j] = vals[offset2 + j]; 
-    }
-    i += BLOCK_WARPS;
-  }
-}
-
 __global__ void fill_actual_neighbors(int64_t* vals,
                                       int64_t* actual_vals,
                                       int* actual_sample_size,
@@ -514,7 +492,17 @@ int GraphDataGenerator::FillInsBuf() {
 std::vector<std::shared_ptr<phi::Allocation>> GraphDataGenerator::SampleNeighbors(
     int64_t* uniq_nodes, int len, int sample_size,
     std::vector<int64_t>& edges_split_num, int64_t* neighbor_len) {
+
   auto gpu_graph_ptr = GraphGpuWrapper::GetInstance();
+  auto sample_res = gpu_graph_ptr->graph_neighbor_sample_all_edge_type(
+      gpuid_, edge_to_id_len_, (uint64_t*)(uniq_nodes), edges_split_num,
+      sample_size, len);
+  std::vector<std::shared_ptr<phi::Allocation>> sample_and_count;
+  sample_and_count.emplace_back(sample_res.actual_val_mem);
+  sample_and_count.emplace_back(sample_res.actual_sample_size_mem);
+  return sample_and_count;
+
+  /*auto gpu_graph_ptr = GraphGpuWrapper::GetInstance();
   auto edge_to_id = gpu_graph_ptr->edge_to_id;
   int64_t all_sample_size = 0;
   std::vector<std::shared_ptr<phi::Allocation>> concat_sample_val;
@@ -567,21 +555,7 @@ std::vector<std::shared_ptr<phi::Allocation>> GraphDataGenerator::SampleNeighbor
                          thrust::device_pointer_cast(all_sample_count_ptr) + len * edge_to_id_len_,
                          cumsum_actual_sample_size.begin(),
                          0);
-
-  /*constexpr int WARP_SIZE = 32;
-  constexpr int BLOCK_WARPS = 128 / WARP_SIZE;
-  constexpr int TILE_SIZE = BLOCK_WARPS * 16;
-  const dim3 block(WARP_SIZE, BLOCK_WARPS);
-  const dim3 grid((len * edge_to_id_len_ + TILE_SIZE - 1) / TILE_SIZE);
-  fill_actual_neighbors<WARP_SIZE, BLOCK_WARPS, TILE_SIZE>
-      <<<grid, block, 0, stream_>>>(
-          all_sample_val_ptr, 
-          final_sample_val_ptr,
-          all_sample_count_ptr,
-          thrust::raw_pointer_cast(cumsum_actual_sample_size.data()),
-          sample_size,
-          len * edge_to_id_len_);*/
-
+ 
   fill_actual_neighbors<<<GET_BLOCKS(len * edge_to_id_len_),
                           CUDA_NUM_THREADS,
                           0,
@@ -598,7 +572,7 @@ std::vector<std::shared_ptr<phi::Allocation>> GraphDataGenerator::SampleNeighbor
   std::vector<std::shared_ptr<phi::Allocation>> sample_and_count;
   sample_and_count.emplace_back(final_sample_val);
   sample_and_count.emplace_back(all_sample_count);
-  return sample_and_count;
+  return sample_and_count; */
 }
 
 std::shared_ptr<phi::Allocation> GraphDataGenerator::GetReindexResult(
