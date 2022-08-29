@@ -555,7 +555,6 @@ std::vector<std::shared_ptr<phi::Allocation>> GraphDataGenerator::SampleNeighbor
                          thrust::device_pointer_cast(all_sample_count_ptr) + len * edge_to_id_len_,
                          cumsum_actual_sample_size.begin(),
                          0);
- 
   fill_actual_neighbors<<<GET_BLOCKS(len * edge_to_id_len_),
                           CUDA_NUM_THREADS,
                           0,
@@ -571,8 +570,8 @@ std::vector<std::shared_ptr<phi::Allocation>> GraphDataGenerator::SampleNeighbor
 
   std::vector<std::shared_ptr<phi::Allocation>> sample_and_count;
   sample_and_count.emplace_back(final_sample_val);
-  sample_and_count.emplace_back(all_sample_count);
-  return sample_and_count; */
+  sample_and_count.emplace_back(all_sample_count); */
+  return sample_and_count;
 }
 
 std::shared_ptr<phi::Allocation> GraphDataGenerator::GetReindexResult(

@@ -1081,7 +1081,7 @@ NeighborSampleResult GpuPsGraphTable::graph_neighbor_sample_v2(
       d_idx_ptr,
       sample_size,
       len);
-
+  
   CUDA_CHECK(cudaStreamSynchronize(stream));
 
   if (cpu_query_switch) {
