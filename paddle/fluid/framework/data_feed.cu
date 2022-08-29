@@ -368,7 +368,6 @@ __global__ void GraphFillSlotLodKernel(int64_t *id_tensor, int len) {
 }
 
 int GraphDataGenerator::FillInsBuf() {
-
   if (ins_buf_pair_len_ >= batch_size_) {
     return batch_size_;
   }
@@ -492,7 +491,6 @@ int GraphDataGenerator::FillInsBuf() {
 std::vector<std::shared_ptr<phi::Allocation>> GraphDataGenerator::SampleNeighbors(
     int64_t* uniq_nodes, int len, int sample_size,
     std::vector<int64_t>& edges_split_num, int64_t* neighbor_len) {
-
   auto gpu_graph_ptr = GraphGpuWrapper::GetInstance();
   auto sample_res = gpu_graph_ptr->graph_neighbor_sample_all_edge_type(
       gpuid_, edge_to_id_len_, (uint64_t*)(uniq_nodes), edges_split_num,
@@ -882,7 +880,6 @@ int GraphDataGenerator::GenerateBatch() {
   std::shared_ptr<phi::Allocation> final_nodes;
   phi::DenseTensor inverse;
   if (gpu_graph_training_) {
-
     VLOG(2) << "total_instance: " << total_instance
             << ", ins_buf_pair_len = " << ins_buf_pair_len_;
     ins_buf = reinterpret_cast<uint64_t *>(d_ins_buf_->ptr());
@@ -1251,7 +1248,6 @@ int GraphDataGenerator::FillFeatureBuf(
 }
 
 int GraphDataGenerator::FillWalkBuf(std::shared_ptr<phi::Allocation> d_walk) {
-
   platform::CUDADeviceGuard guard(gpuid_);
   size_t once_max_sample_keynum = walk_degree_ * once_sample_startid_len_;
   ////////
@@ -1383,7 +1379,6 @@ int GraphDataGenerator::FillWalkBuf(std::shared_ptr<phi::Allocation> d_walk) {
     total_row += jump_rows_;
     cursor_ += 1;
   }
-
   buf_state_.Reset(total_row);
   int *d_random_row = reinterpret_cast<int *>(d_random_row_->ptr());
 
