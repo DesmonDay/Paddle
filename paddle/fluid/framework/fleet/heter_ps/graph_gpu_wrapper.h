@@ -62,6 +62,7 @@ class GraphGpuWrapper {
   void make_complementary_graph(int idx, int64_t byte_size);
   void set_search_level(int level);
   void init_search_level(int level);
+  void set_walk_shuffle_seed(int shuffle_seed);
   int get_all_id(int type,
                  int slice_num,
                  std::vector<std::vector<uint64_t>>* output);
@@ -120,6 +121,7 @@ class GraphGpuWrapper {
   int search_level = 1;
   void* graph_table;
   int upload_num = 8;
+  int shuffle_seed = 0;
   std::shared_ptr<::ThreadPool> upload_task_pool;
   std::string feature_separator_ = std::string(" ");
 };

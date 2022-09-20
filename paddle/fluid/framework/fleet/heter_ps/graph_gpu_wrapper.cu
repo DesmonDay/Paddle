@@ -195,6 +195,8 @@ void GraphGpuWrapper::add_table_feat_conf(std::string table_name,
 }
 void GraphGpuWrapper::init_search_level(int level) { search_level = level; }
 
+void GraphGpuWrapper::set_walk_shuffle_seed(int seed) { shuffle_seed = seed; }
+
 void GraphGpuWrapper::init_service() {
   table_proto.set_task_pool_size(24);
   table_proto.set_shard_num(1000);
