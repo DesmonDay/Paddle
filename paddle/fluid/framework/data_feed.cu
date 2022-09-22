@@ -1377,7 +1377,7 @@ int GraphDataGenerator::FillWalkBuf(std::shared_ptr<phi::Allocation> d_walk) {
   buf_state_.Reset(total_row);
   int *d_random_row = reinterpret_cast<int *>(d_random_row_->ptr());
 
-  thrust::random::default_random_engine engine(gpu_graph_ptr->shuffle_seed);
+  thrust::random::default_random_engine engine(shuffle_seed_);
   const auto &exec_policy = thrust::cuda::par.on(stream_);
   thrust::counting_iterator<int> cnt_iter(0);
   thrust::shuffle_copy(exec_policy,
@@ -1387,8 +1387,7 @@ int GraphDataGenerator::FillWalkBuf(std::shared_ptr<phi::Allocation> d_walk) {
                        engine);
 
   cudaStreamSynchronize(stream_);
-  gpu_graph_ptr->set_walk_shuffle_seed(engine());
-  // shuffle_seed_ = engine();
+  shuffle_seed_ = engine();
 
   if (debug_mode_) {
     int *h_random_row = new int[total_row + 10];
